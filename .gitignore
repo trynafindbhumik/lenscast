@@ -1,3 +1,7 @@
+# Local files (not shipped in repo)
+DEVELOPER_README.md
+lenscast.sh
+
 # Rust/Cargo
 **/target/
 Cargo.lock
