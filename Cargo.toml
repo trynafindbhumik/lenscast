@@ -1,0 +1,9 @@
+[package]
+name = "lenscast"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+gdk = "0.18"
+glib = "0.18"
