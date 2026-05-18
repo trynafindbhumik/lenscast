@@ -1,4 +1,3 @@
-/// GNOME Fedora Desktop Theme CSS
 /// Used by GTK4 + libadwaita
 
 pub const GNOME_COLORS: &str = r#"
@@ -18,7 +17,7 @@ pub const GNOME_COLORS: &str = r#"
 @define-color warning #e5a50a;
 @define-color error #e01b24;
 
-/* GNOME Color Variables - Dark Mode */
+/* Color Variables - Dark Mode */
 @define-color dark-bg-primary #1e1e1e;
 @define-color dark-bg-secondary #242424;
 @define-color dark-bg-sidebar #242424;
