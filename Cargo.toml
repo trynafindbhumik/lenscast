@@ -4,10 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-gtk = { version = "0.11", package = "gtk4" }
+gtk = { version = "0.11", package = "gtk4", features = ["gnome_50"] }
 gdk = { version = "0.11", package = "gdk4" }
-adw = { version = "0.9", package = "libadwaita" }
-glib = "0.21"
+adw = { version = "0.9", package = "libadwaita", features = ["gtk_v4_22", "v1_4"] }
+glib = "0.22"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+async-channel = "2.5.0"
+
+[target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
+ksni = "0.3"
 
 [profile.release]
 strip = true
