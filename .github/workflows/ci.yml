@@ -8,22 +8,34 @@ on:
 jobs:
   ci:
     runs-on: ubuntu-latest
+
+    container:
+      image: fedora:rawhide
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - name: Install dependencies
+        run: |
+          dnf update -y
+
+          dnf install -y \
+            rust \
+            cargo \
+            gcc \
+            gcc-c++ \
+            pkg-config \
+            gtk4-devel \
+            libadwaita-devel
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
-      - name: Install system deps
-        run: sudo apt-get install -y libglib2.0-dev
-
       - name: Build
         run: cargo build --all-targets
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --all-targets
@@ -32,13 +44,25 @@ jobs:
     needs: ci
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+
+    container:
+      image: fedora:rawhide
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
+      - name: Install dependencies
+        run: |
+          dnf update -y
+
+          dnf install -y \
+            rust \
+            cargo \
+            gcc \
+            gcc-c++ \
+            pkg-config \
+            gtk4-devel \
+            libadwaita-devel
 
       - name: Build release
         run: cargo build --release --locked
@@ -48,4 +72,3 @@ jobs:
         with:
           files: |
             target/release/lenscast
-            target/release/lenscast.exe
