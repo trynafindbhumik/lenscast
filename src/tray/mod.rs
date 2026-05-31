@@ -45,7 +45,7 @@ impl ksni::Tray for LensCastTray {
             StandardItem {
                 label: "Quit".into(),
                 activate: std::boxed::Box::new(|tray: &mut Self| {
-                    let _ = tray.sender.try_send(TrayMessage::Quit);
+                    let _ = tray.sender.try_send(TrayMessage::QuitAndDisconnect);
                 }),
                 ..Default::default()
             }
@@ -59,6 +59,7 @@ impl ksni::Tray for LensCastTray {
 pub fn start_tray_message_handler(
     app: AdwApplication,
     window_ref: Rc<RefCell<Option<adw::ApplicationWindow>>>,
+    device_store: crate::ui::devices::DeviceStore,
     rx: async_channel::Receiver<TrayMessage>,
 ) {
     let ctx = glib::MainContext::default();
@@ -71,7 +72,20 @@ pub fn start_tray_message_handler(
                         window.present();
                     }
                 }
-                TrayMessage::Quit => {
+                TrayMessage::QuitAndDisconnect => {
+                    eprintln!("[Tray] Quit with disconnect requested");
+                    
+                    // Disconnect all devices
+                    let devices = device_store.borrow();
+                    for device in devices.iter() {
+                        let addr = format!("{}:{}", device.address, device.port);
+                        eprintln!("[Tray] Disconnecting: adb disconnect {}", addr);
+                        let _ = std::process::Command::new("adb")
+                            .args(["disconnect", &addr])
+                            .spawn();
+                    }
+                    drop(devices); // Release borrow before quitting
+                    
                     if let Some(window) = window_ref.borrow().as_ref() {
                         window.set_visible(false);
                     }

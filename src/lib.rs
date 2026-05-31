@@ -1,6 +1,7 @@
 mod app;
 mod theme;
 mod ui;
+mod adb;
 
 #[cfg(not(any(target_os = "macos", windows)))]
 mod tray;

@@ -1,8 +1,11 @@
 name: Build & Release
 
 on:
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
   push:
-    branches: [ main, development ]
     tags: [ 'v*' ]
 
 jobs:

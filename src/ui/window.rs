@@ -30,11 +30,12 @@ pub fn create_content_box(
     content_box
 }
 
-/// Builds and returns the main application window with the given header bar and content.
+/// Builds the main application window.
+/// `content` is generic so both `gtk::Box` and `adw::ToastOverlay` can be passed.
 pub fn create_window(
     app: &adw::Application,
     header_bar: &HeaderBar,
-    content: &gtk::Box,
+    content: &impl gtk::prelude::IsA<gtk::Widget>,
 ) -> AdwApplicationWindow {
     let window = AdwApplicationWindow::builder()
         .application(app)
