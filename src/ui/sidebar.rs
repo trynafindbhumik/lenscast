@@ -105,10 +105,19 @@ fn build_device_row(
     let name_lbl = Label::builder()
         .label(&device.name)
         .halign(gtk::Align::Start)
-        .hexpand(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
     name_lbl.add_css_class("device-row-label");
+
+    // Connected indicator (checkmark using text)
+    let connected_indicator = Label::new(Some("✓"));
+    connected_indicator.add_css_class("device-connected-indicator");
+    connected_indicator.set_visible(device.connected);
+
+    // Spacer between name and menu
+    let spacer = gtk::Box::builder()
+        .hexpand(true)
+        .build();
 
     // Three-dot menu button
     let menu_btn = gtk::MenuButton::builder()
@@ -125,11 +134,14 @@ fn build_device_row(
         window,
         refresh,
         &name_lbl,
+        &connected_indicator,
     );
     menu_btn.set_popover(Some(&popover));
 
     row_box.append(&icon);
     row_box.append(&name_lbl);
+    row_box.append(&spacer);
+    row_box.append(&connected_indicator);
     row_box.append(&menu_btn);
 
     let row = gtk::ListBoxRow::builder()
@@ -149,6 +161,7 @@ fn build_device_popover(
     window: &adw::ApplicationWindow,
     refresh: &Rc<dyn Fn()>,
     name_lbl: &Label,
+    connected_indicator: &Label,
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
@@ -163,11 +176,133 @@ fn build_device_popover(
         .margin_bottom(4)
         .build();
 
-    let connect_btn = make_popover_btn("Connect", "network-wired-symbolic", false);
-    connect_btn.connect_clicked({
+    // Connect/Disconnect button
+    let (btn_label, btn_icon, is_connected) = if device.connected {
+        ("Disconnect", "network-offline-symbolic", true)
+    } else {
+        ("Connect", "network-wired-symbolic", false)
+    };
+    
+    let connect_btn = make_popover_btn(btn_label, btn_icon, false);
+    {
+        let device_id = device.id;
+        let store = store.clone();
+        let toast_overlay = toast_overlay.clone();
+        let refresh = refresh.clone();
         let p = popover.clone();
-        move |_| { p.popdown(); }
-    });
+        let conn_indicator = connected_indicator.clone();
+        
+        connect_btn.connect_clicked(move |_| {
+            p.popdown();
+            
+            let (device_name, address) = {
+                let devices = store.borrow();
+                devices.iter()
+                    .find(|d| d.id == device_id)
+                    .map(|d| (d.name.clone(), format!("{}:{}", d.address, d.port)))
+                    .unwrap_or_else(|| ("Unknown".to_string(), String::new()))
+            };
+            
+            if !address.is_empty() {
+                let do_connect = !is_connected;
+                
+                if do_connect {
+                    // Connect to device
+                    eprintln!("[Sidebar] Connecting to: {}", address);
+                    
+                    // Run adb connect
+                    let _ = std::process::Command::new("adb")
+                        .args(["connect", &address])
+                        .output();
+                    
+                    // Small delay to let adb settle
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    
+                    // Verify the connection by checking adb devices
+                    let verify_result = std::process::Command::new("adb")
+                        .args(["devices"])
+                        .output();
+                    
+                    let is_actually_connected = match verify_result {
+                        Ok(out) => {
+                            let stdout = String::from_utf8_lossy(&out.stdout);
+                            stdout.lines().any(|line| {
+                                line.starts_with(&address) && line.contains("device")
+                            })
+                        }
+                        Err(_) => false,
+                    };
+                    
+                    if is_actually_connected {
+                        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+                            d.connected = true;
+                        }
+                        conn_indicator.set_visible(true);
+                        save_devices(&store.borrow());
+                        
+                        let t = adw::Toast::builder()
+                            .title(format!("Connected to {}", device_name))
+                            .timeout(3)
+                            .build();
+                        t.set_priority(adw::ToastPriority::Normal);
+                        toast_overlay.add_toast(t);
+                    } else {
+                        let t = adw::Toast::builder()
+                            .title(format!("Failed to connect to {}", device_name))
+                            .timeout(3)
+                            .build();
+                        t.set_priority(adw::ToastPriority::Normal);
+                        toast_overlay.add_toast(t);
+                    }
+                } else {
+                    // Disconnect from device
+                    eprintln!("[Sidebar] Disconnecting from: {}", address);
+                    let _ = std::process::Command::new("adb")
+                        .args(["disconnect", &address])
+                        .output();
+                    
+                    // Verify disconnection
+                    let verify_result = std::process::Command::new("adb")
+                        .args(["devices"])
+                        .output();
+                    
+                    let is_still_connected = match verify_result {
+                        Ok(out) => {
+                            let stdout = String::from_utf8_lossy(&out.stdout);
+                            stdout.lines().any(|line| {
+                                line.starts_with(&address) && line.contains("device")
+                            })
+                        }
+                        Err(_) => false,
+                    };
+                    
+                    if !is_still_connected {
+                        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+                            d.connected = false;
+                        }
+                        conn_indicator.set_visible(false);
+                        save_devices(&store.borrow());
+                        
+                        let t = adw::Toast::builder()
+                            .title(format!("Disconnected from {}", device_name))
+                            .timeout(3)
+                            .build();
+                        t.set_priority(adw::ToastPriority::Normal);
+                        toast_overlay.add_toast(t);
+                    } else {
+                        let t = adw::Toast::builder()
+                            .title(format!("Failed to disconnect from {}", device_name))
+                            .timeout(3)
+                            .build();
+                        t.set_priority(adw::ToastPriority::Normal);
+                        toast_overlay.add_toast(t);
+                    }
+                }
+            }
+            
+            refresh();
+        });
+    }
     vbox.append(&connect_btn);
 
     let edit_btn = make_popover_btn("Edit Name", "document-edit-symbolic", false);

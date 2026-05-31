@@ -1,6 +1,8 @@
 /// GNOME Adwaita theme colors supporting both light and dark modes.
 pub const GNOME_COLORS: &str = r#"
-/* ── Adwaita base — auto light/dark ─────────────────────────────────────── */
+.toast-text {
+    margin: 0;
+}
 
 window {
     background-color: @theme_bg_color;
@@ -52,11 +54,6 @@ headerbar {
     color: @theme_fg_color;
 }
 
-
-/* ══════════════════════════════════════════════════════════════════════════
-   Sidebar — device list
-   ══════════════════════════════════════════════════════════════════════════ */
-
 .device-listbox {
     background: transparent;
 }
@@ -88,7 +85,13 @@ headerbar {
     color: @theme_fg_color;
 }
 
-/* Three-dot button: always visible, low opacity at rest */
+.device-connected-indicator {
+    color: #2ec27e;
+    font-size: 16px;
+    font-weight: bold;
+    margin-right: 6px;
+}
+
 button.device-menu-btn {
     min-width:  26px;
     min-height: 26px;
@@ -98,7 +101,6 @@ button.device-menu-btn {
     transition: opacity 150ms ease;
 }
 
-/* Show the button when the row is hovered */
 row:hover button.device-menu-btn {
     opacity: 0.55;
 }
@@ -112,8 +114,6 @@ button.device-menu-btn:active {
     opacity: 1.0;
     background-color: alpha(@theme_fg_color, 0.18);
 }
-
-/* ── Device popover ────────────────────────────────────────────────────── */
 
 .device-popover > contents {
     padding: 4px;
@@ -138,13 +138,6 @@ button.device-popover-item.destructive-action {
 button.device-popover-item.destructive-action:hover {
     background-color: alpha(@error_color, 0.10);
 }
-
-
-/* ══════════════════════════════════════════════════════════════════════════
-   Add Device Modal
-   ══════════════════════════════════════════════════════════════════════════ */
-
-/* ── Animated illustration ─────────────────────────────────────────────── */
 
 .modal-icon-outer {
     border-radius: 66px;
@@ -176,8 +169,6 @@ button.device-popover-item.destructive-action:hover {
     50%        { background-color: alpha(@accent_bg_color, 0.16); }
 }
 
-/* ── Typography ────────────────────────────────────────────────────────── */
-
 .modal-step-label {
     font-size: 11px;
     font-weight: 600;
@@ -199,8 +190,6 @@ button.device-popover-item.destructive-action:hover {
     opacity: 0.85;
 }
 
-/* ── Info (ⓘ) button — stays petite ───────────────────────────────────── */
-
 button.modal-info-btn {
     min-width:  18px;
     min-height: 18px;
@@ -215,8 +204,6 @@ button.modal-info-btn image {
     -gtk-icon-size: 13px;
 }
 
-/* ── Entry — compact, GNOME search-like ────────────────────────────────── */
-
 entry.modal-entry {
     min-height:  24px;
     padding:     8px 10px;
@@ -230,8 +217,6 @@ entry.modal-entry.error:focus {
     box-shadow:   0 0 0 1px @error_color;
 }
 
-/* ── Next / arrow button ────────────────────────────────────────────────── */
-
 button.modal-next-btn {
     min-width:    28px;
     min-height:   28px;
@@ -243,18 +228,11 @@ button.modal-next-btn image {
     -gtk-icon-size: 16px;
 }
 
-/* ── Error message label ───────────────────────────────────────────────── */
-
 .modal-error-label {
     font-size:   12px;
     font-weight: 500;
     color: @error_color;
 }
-
-
-/* ══════════════════════════════════════════════════════════════════════════
-   Step 2 — Connect modal (two-panel layout)
-   ══════════════════════════════════════════════════════════════════════════ */
 
 .step2-title {
     font-size: 18px;
@@ -309,8 +287,6 @@ entry.step2-field-entry.error:focus {
     margin-bottom: 0;
 }
 
-/* ── QR card ─────────────────────────────────────────────────────────────── */
-
 .step2-qr-card {
     background-color: @view_bg_color;
     border-radius: 16px;
@@ -318,7 +294,6 @@ entry.step2-field-entry.error:focus {
     padding: 20px;
 }
 
-/* ASCII QR code styling */
 .qr-ascii {
     font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Cascadia Code", "Courier New", monospace;
     font-size: 10px;
@@ -336,7 +311,6 @@ entry.step2-field-entry.error:focus {
     outline: none;
 }
 
-/* ScrolledWindow for QR */
 .step2-qr-card > scrolledwindow {
     background-color: transparent;
     border: none;
@@ -347,7 +321,6 @@ entry.step2-field-entry.error:focus {
     background-color: transparent;
 }
 
-/* Hide scrollbars in QR area */
 .step2-qr-card > scrolledwindow > scrollbar {
     opacity: 0;
     min-width: 0;
@@ -368,8 +341,6 @@ entry.step2-field-entry.error:focus {
     line-height: 1.55;
 }
 
-/* ── Connect button ──────────────────────────────────────────────────────── */
-
 button.step2-connect-btn {
     border-radius: 10px;
     padding: 10px 24px;
@@ -377,8 +348,6 @@ button.step2-connect-btn {
     font-weight: 600;
     min-height: 20px;
 }
-
-/* ── Spinner pages (pairing / connecting) ────────────────────────────────── */
 
 .step2-spinner {
     -gtk-icon-size: 52px;
@@ -403,10 +372,6 @@ button.step2-connect-btn {
     opacity: 0.55;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Enter Pairing Code page
-   ══════════════════════════════════════════════════════════════════════════ */
-
 .code-icon-wrap {
     background-color: alpha(@accent_bg_color, 0.15);
     border-radius: 50px;
@@ -430,7 +395,6 @@ button.step2-connect-btn {
     line-height: 1.6;
 }
 
-/* Large, centered 6-digit entry — feels like a PIN pad */
 entry.code-entry {
     font-size: 26px;
     font-weight: 700;
