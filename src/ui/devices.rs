@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -14,6 +15,8 @@ pub struct Device {
     pub name: String,
     pub address: String,
     pub port: u16,
+    #[serde(default)]
+    pub connected: bool,
 }
 
 /// Shared, cloneable handle to the device list.
@@ -56,4 +59,51 @@ pub fn new_device_store() -> DeviceStore {
 
 pub fn next_device_id() -> u32 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Get list of currently connected device addresses from adb.
+/// Returns addresses like "192.168.1.100:5555"
+pub fn get_connected_adb_devices() -> Vec<String> {
+    let output = Command::new("adb")
+        .args(["devices", "-l"])
+        .output();
+    
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .skip(1) // Skip "List of devices attached"
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 && parts.get(1) == Some(&"device") {
+                        // Extract device address (first part before ':' or the whole thing if no port)
+                        Some(parts[0].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Update the connected status of all devices based on actual adb connections.
+/// Returns true if any device's connection status changed.
+pub fn refresh_connected_status(store: &DeviceStore) -> bool {
+    let adb_connected = get_connected_adb_devices();
+    let mut changed = false;
+    
+    let mut devices = store.borrow_mut();
+    for device in devices.iter_mut() {
+        let addr = format!("{}:{}", device.address, device.port);
+        let is_connected = adb_connected.iter().any(|a| a == &addr);
+        if device.connected != is_connected {
+            device.connected = is_connected;
+            changed = true;
+        }
+    }
+    
+    changed
 }

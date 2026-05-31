@@ -2,10 +2,11 @@ use adw::prelude::*;
 use adw::Application as AdwApplication;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use crate::theme::setup_theme;
 use crate::ui;
-use crate::ui::devices::{next_device_id, new_device_store, save_devices, Device};
+use crate::ui::devices::{refresh_connected_status, next_device_id, new_device_store, save_devices, Device};
 use crate::ui::sidebar::rebuild_device_list;
 
 const APP_ID: &str = "com.lenscast.app";
@@ -41,6 +42,9 @@ pub fn run() {
 
         // ── Shared device store ───────────────────────────────────────────────
         let device_store = new_device_store();
+        
+        // ── Refresh connected status on startup ───────────────────────────────
+        refresh_connected_status(&device_store);
 
         // ── Build UI skeleton ─────────────────────────────────────────────────
         let add_device_btn = ui::create_add_device_button();
@@ -78,6 +82,24 @@ pub fn run() {
             })
         };
         *refresh_holder.borrow_mut() = Some(refresh.clone());
+        
+        // ── Periodic connected status refresh ─────────────────────────────────
+        // Periodically check adb devices to update connected indicators
+        let refresh_store = device_store.clone();
+        let refresh_toast = toast_overlay.clone();
+        let refresh_window = window.clone();
+        let refresh_listbox = device_listbox.clone();
+        let refresh_holder_for_timer = refresh_holder.clone();
+        
+        gtk::glib::timeout_add_local(Duration::from_secs(5), move || {
+            if refresh_connected_status(&refresh_store) {
+                // Connection status changed, rebuild the list
+                if let Some(r) = refresh_holder_for_timer.borrow().clone() {
+                    rebuild_device_list(&refresh_listbox, &refresh_store, &refresh_toast, &refresh_window, &r);
+                }
+            }
+            gtk::glib::ControlFlow::Continue
+        });
 
         // Populate sidebar with initial (empty) state
         refresh();
@@ -103,6 +125,7 @@ pub fn run() {
                             name: name.clone(),
                             address,
                             port,
+                            connected: false,
                         };
                         store.borrow_mut().push(device.clone());
                         
