@@ -5,8 +5,7 @@ use std::rc::Rc;
 
 use crate::ui::devices::{save_devices, Device, DeviceStore};
 
-/// Returns `(sidebar_box, device_listbox)`.
-/// `device_listbox` is populated/repopulated by `rebuild_device_list`.
+/// Returns (sidebar_box, device_listbox).
 pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
     let sidebar = gtk::Box::builder()
         .orientation(Orientation::Vertical)
@@ -14,7 +13,6 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
     sidebar.set_size_request(240, -1);
     sidebar.add_css_class("sidebar");
 
-    // Header
     let sidebar_header = Label::new(None);
     sidebar_header.set_markup("<b>Devices</b>");
     sidebar_header.set_halign(gtk::Align::Start);
@@ -23,7 +21,6 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
     sidebar_header.set_margin_bottom(8);
     sidebar.append(&sidebar_header);
 
-    // Scrollable device list
     let scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -41,7 +38,7 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
     (sidebar, device_listbox)
 }
 
-//  Rebuild — called after every add / edit / delete
+/// Repopulates the device list after add/edit/delete.
 pub fn rebuild_device_list(
     listbox: &gtk::ListBox,
     store: &DeviceStore,
@@ -49,7 +46,6 @@ pub fn rebuild_device_list(
     window: &adw::ApplicationWindow,
     refresh: &Rc<dyn Fn()>,
 ) {
-    // Remove all existing rows
     while let Some(child) = listbox.first_child() {
         listbox.remove(&child);
     }
@@ -77,7 +73,6 @@ pub fn rebuild_device_list(
     }
 }
 
-//  Individual device row
 fn build_device_row(
     device: &Device,
     store: &DeviceStore,
@@ -95,13 +90,11 @@ fn build_device_row(
         .valign(gtk::Align::Center)
         .build();
 
-    // Phone icon
     let icon = gtk::Image::from_icon_name("phone-symbolic");
     icon.set_pixel_size(16);
     icon.set_margin_end(10);
     icon.add_css_class("device-row-icon");
 
-    // Device name
     let name_lbl = Label::builder()
         .label(&device.name)
         .halign(gtk::Align::Start)
@@ -109,17 +102,14 @@ fn build_device_row(
         .build();
     name_lbl.add_css_class("device-row-label");
 
-    // Connected indicator (checkmark using text)
     let connected_indicator = Label::new(Some("✓"));
     connected_indicator.add_css_class("device-connected-indicator");
     connected_indicator.set_visible(device.connected);
 
-    // Spacer between name and menu
     let spacer = gtk::Box::builder()
         .hexpand(true)
         .build();
 
-    // Three-dot menu button
     let menu_btn = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .has_frame(false)
@@ -176,13 +166,12 @@ fn build_device_popover(
         .margin_bottom(4)
         .build();
 
-    // Connect/Disconnect button
     let (btn_label, btn_icon, is_connected) = if device.connected {
         ("Disconnect", "network-offline-symbolic", true)
     } else {
         ("Connect", "network-wired-symbolic", false)
     };
-    
+
     let connect_btn = make_popover_btn(btn_label, btn_icon, false);
     {
         let device_id = device.id;
@@ -191,10 +180,10 @@ fn build_device_popover(
         let refresh = refresh.clone();
         let p = popover.clone();
         let conn_indicator = connected_indicator.clone();
-        
+
         connect_btn.connect_clicked(move |_| {
             p.popdown();
-            
+
             let (device_name, address) = {
                 let devices = store.borrow();
                 devices.iter()
@@ -202,27 +191,23 @@ fn build_device_popover(
                     .map(|d| (d.name.clone(), format!("{}:{}", d.address, d.port)))
                     .unwrap_or_else(|| ("Unknown".to_string(), String::new()))
             };
-            
+
             if !address.is_empty() {
                 let do_connect = !is_connected;
-                
+
                 if do_connect {
-                    // Connect to device
                     eprintln!("[Sidebar] Connecting to: {}", address);
-                    
-                    // Run adb connect
+
                     let _ = std::process::Command::new("adb")
                         .args(["connect", &address])
                         .output();
-                    
-                    // Small delay to let adb settle
+
                     std::thread::sleep(std::time::Duration::from_millis(300));
-                    
-                    // Verify the connection by checking adb devices
+
                     let verify_result = std::process::Command::new("adb")
                         .args(["devices"])
                         .output();
-                    
+
                     let is_actually_connected = match verify_result {
                         Ok(out) => {
                             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -232,14 +217,14 @@ fn build_device_popover(
                         }
                         Err(_) => false,
                     };
-                    
+
                     if is_actually_connected {
                         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
                             d.connected = true;
                         }
                         conn_indicator.set_visible(true);
                         save_devices(&store.borrow());
-                        
+
                         let t = adw::Toast::builder()
                             .title(format!("Connected to {}", device_name))
                             .timeout(3)
@@ -255,17 +240,15 @@ fn build_device_popover(
                         toast_overlay.add_toast(t);
                     }
                 } else {
-                    // Disconnect from device
                     eprintln!("[Sidebar] Disconnecting from: {}", address);
                     let _ = std::process::Command::new("adb")
                         .args(["disconnect", &address])
                         .output();
-                    
-                    // Verify disconnection
+
                     let verify_result = std::process::Command::new("adb")
                         .args(["devices"])
                         .output();
-                    
+
                     let is_still_connected = match verify_result {
                         Ok(out) => {
                             let stdout = String::from_utf8_lossy(&out.stdout);
@@ -275,14 +258,14 @@ fn build_device_popover(
                         }
                         Err(_) => false,
                     };
-                    
+
                     if !is_still_connected {
                         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
                             d.connected = false;
                         }
                         conn_indicator.set_visible(false);
                         save_devices(&store.borrow());
-                        
+
                         let t = adw::Toast::builder()
                             .title(format!("Disconnected from {}", device_name))
                             .timeout(3)
@@ -299,7 +282,7 @@ fn build_device_popover(
                     }
                 }
             }
-            
+
             refresh();
         });
     }
@@ -346,7 +329,6 @@ fn build_device_popover(
     popover
 }
 
-/// Builds a flat button with icon + label for use inside the popover.
 fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
     let row = gtk::Box::builder()
         .orientation(Orientation::Horizontal)
@@ -377,7 +359,6 @@ fn show_edit_dialog(
     refresh: &Rc<dyn Fn()>,
     name_lbl: &Label,
 ) {
-    // Find current name
     let current_name = store
         .borrow()
         .iter()
@@ -462,14 +443,12 @@ fn show_edit_dialog(
                 err_lbl.set_visible(true);
                 return;
             }
-            // Update store
             let new_name = trimmed.to_string();
             if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
                 d.name = new_name.clone();
             }
             name_lbl.set_label(&new_name);
-            
-            // Save changes to disk
+
             save_devices(&store.borrow());
             refresh();
 
@@ -502,7 +481,6 @@ fn show_edit_dialog(
 
     dialog.present();
     entry.grab_focus();
-    // Select all so the user can type immediately
     entry.select_region(0, -1);
 }
 
@@ -512,7 +490,6 @@ fn delete_device(
     toast_overlay: &adw::ToastOverlay,
     refresh: &Rc<dyn Fn()>,
 ) {
-    // Get device info before removing
     let device_address = {
         let devices = store.borrow();
         devices.iter()
@@ -520,7 +497,6 @@ fn delete_device(
             .map(|d| format!("{}:{}", d.address, d.port))
     };
 
-    // Disconnect from the device via adb
     if let Some(addr) = &device_address {
         eprintln!("[Delete] Running: adb disconnect {}", addr);
         let _ = Command::new("adb")
@@ -529,7 +505,6 @@ fn delete_device(
         eprintln!("[Delete] Disconnect spawned for {}", addr);
     }
 
-    // Pull the device out of the store
     let removed: Option<Device> = {
         let mut v = store.borrow_mut();
         v.iter().position(|d| d.id == device_id).map(|pos| v.remove(pos))
@@ -539,7 +514,6 @@ fn delete_device(
 
     refresh();
 
-    // Toast with Undo
     let toast = adw::Toast::builder()
         .title(format!("\"{}\" removed", device.name))
         .button_label("Undo")
@@ -547,19 +521,15 @@ fn delete_device(
         .build();
     toast.set_priority(adw::ToastPriority::Normal);
 
-    // Save changes to disk
     save_devices(&store.borrow());
-    
-    // On Undo: put the device back, refresh
+
     toast.connect_button_clicked({
         let store = store.clone();
         let refresh = refresh.clone();
         let device = device.clone();
         move |_| {
             store.borrow_mut().push(device.clone());
-            // Sort by id so it re-appears in original order
             store.borrow_mut().sort_by_key(|d| d.id);
-            // Persist to disk
             save_devices(&store.borrow());
             refresh();
         }

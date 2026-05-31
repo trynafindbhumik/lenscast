@@ -29,24 +29,16 @@ pub fn run() {
     let hold_guards_clone = hold_guards.clone();
 
     app.connect_activate(move |app| {
-        // If window already exists, just show it
-        if let Some(window) = window_ref_clone.borrow().as_ref() {
-            if !window.is_visible() {
-                window.set_visible(true);
-            }
-            window.present();
+        if window_ref_clone.borrow().as_ref().map(|w| w.is_visible()).unwrap_or(false) {
+            window_ref_clone.borrow().as_ref().unwrap().present();
             return;
         }
 
         hold_guards_clone.borrow_mut().push(app.hold());
 
-        // ── Shared device store ───────────────────────────────────────────────
         let device_store = new_device_store();
-        
-        // ── Refresh connected status on startup ───────────────────────────────
         refresh_connected_status(&device_store);
 
-        // ── Build UI skeleton ─────────────────────────────────────────────────
         let add_device_btn = ui::create_add_device_button();
         let header_bar = ui::create_header_bar(&add_device_btn);
 
@@ -55,16 +47,13 @@ pub fn run() {
         let content_area = ui::create_content_area();
         let content_box = ui::create_content_box(&sidebar, &separator, &content_area);
 
-        // ── Toast overlay wraps the entire content area ───────────────────────
         let toast_overlay = adw::ToastOverlay::new();
         toast_overlay.set_child(Some(&content_box));
 
         let window = ui::create_window(app, &header_bar, &toast_overlay);
         setup_theme(&window);
 
-        // ── Recursive refresh closure ─────────────────────────────────────────
-        // We need the refresh fn to pass itself to row builders (for edit/delete).
-        // Use an Rc<RefCell<Option<Rc<dyn Fn()>>>> to allow self-reference.
+        // Refresh function that can call itself recursively
         let refresh_holder: RefreshHolder = Rc::new(RefCell::new(None));
 
         let refresh: Rc<dyn Fn()> = {
@@ -74,7 +63,6 @@ pub fn run() {
             let window = window.clone();
             let rh = refresh_holder.clone();
             Rc::new(move || {
-                // Pull out the stored Rc before passing it in (avoids borrow clash)
                 let self_ref = rh.borrow().clone();
                 if let Some(r) = self_ref {
                     rebuild_device_list(&listbox, &store, &toast, &window, &r);
@@ -82,9 +70,8 @@ pub fn run() {
             })
         };
         *refresh_holder.borrow_mut() = Some(refresh.clone());
-        
-        // ── Periodic connected status refresh ─────────────────────────────────
-        // Periodically check adb devices to update connected indicators
+
+        // Periodic connection status check
         let refresh_store = device_store.clone();
         let refresh_toast = toast_overlay.clone();
         let refresh_window = window.clone();
@@ -96,7 +83,6 @@ pub fn run() {
 
         *source_id.borrow_mut() = Some(gtk::glib::timeout_add_local(Duration::from_secs(5), move || {
             if refresh_connected_status(&refresh_store) {
-                // Connection status changed, rebuild the list
                 if let Some(r) = refresh_holder_for_timer.borrow().clone() {
                     rebuild_device_list(&refresh_listbox, &refresh_store, &refresh_toast, &refresh_window, &r);
                 }
@@ -104,10 +90,8 @@ pub fn run() {
             gtk::glib::ControlFlow::Continue
         }));
 
-        // Populate sidebar with initial (empty) state
         refresh();
 
-        // ── "Add Device" button handler ───────────────────────────────────────
         add_device_btn.connect_clicked({
             let window = window.clone();
             let store = device_store.clone();
@@ -122,7 +106,6 @@ pub fn run() {
                     &window,
                     Box::new(move |name: String, address: String, port: u16| {
                         eprintln!("[APP] Device added: name='{}', address='{}', port={}", name, address, port);
-                        // Add the newly paired device to the store
                         let device = Device {
                             id: next_device_id(),
                             name: name.clone(),
@@ -131,17 +114,10 @@ pub fn run() {
                             connected: false,
                         };
                         store.borrow_mut().push(device.clone());
-                        
-                        // Persist to disk
                         save_devices(&store.borrow());
-
-                        // Refresh connected status now — device was just paired so it should be live
                         refresh_connected_status(&store);
-
-                        // Rebuild sidebar
                         refresh();
 
-                        // Celebrate with a GNOME-style success toast
                         let t = adw::Toast::builder()
                             .title(format!("\"{}\" paired successfully", name))
                             .timeout(4)
@@ -152,7 +128,7 @@ pub fn run() {
             }
         });
 
-        // ── Hide on close (keep running in tray) ──────────────────────────────
+        // Hide on close instead of quitting (keep running in tray)
         window.connect_close_request({
             let window = window.clone();
             let source_id_clone = source_id_clone.clone();
@@ -168,7 +144,6 @@ pub fn run() {
         *window_ref.borrow_mut() = Some(window.clone());
         window.present();
 
-        // ── System tray (Linux only) ──────────────────────────────────────────
         #[cfg(not(any(target_os = "macos", windows)))]
         {
             let (tx, rx) = async_channel::unbounded::<crate::tray::TrayMessage>();

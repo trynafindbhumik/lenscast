@@ -1,4 +1,4 @@
-/// GNOME Adwaita theme colors supporting both light and dark modes.
+/// GNOME Adwaita theme colors for light and dark modes.
 pub const GNOME_COLORS: &str = r#"
 .toast-text {
     margin: 0;

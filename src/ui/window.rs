@@ -2,6 +2,7 @@ use adw::prelude::*;
 use adw::{ApplicationWindow as AdwApplicationWindow, HeaderBar, ToolbarView};
 use gtk::Orientation;
 
+/// Creates a vertical separator between sidebar and content area.
 pub fn create_separator() -> gtk::Box {
     let separator = gtk::Box::builder()
         .orientation(Orientation::Vertical)
@@ -12,6 +13,7 @@ pub fn create_separator() -> gtk::Box {
     separator
 }
 
+/// Combines sidebar, separator, and content area into a single box.
 pub fn create_content_box(
     sidebar: &gtk::Box,
     separator: &gtk::Box,
@@ -31,7 +33,6 @@ pub fn create_content_box(
 }
 
 /// Builds the main application window.
-/// `content` is generic so both `gtk::Box` and `adw::ToastOverlay` can be passed.
 pub fn create_window(
     app: &adw::Application,
     header_bar: &HeaderBar,

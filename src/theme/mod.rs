@@ -5,6 +5,7 @@ pub use css::GNOME_COLORS;
 use adw::{ApplicationWindow, StyleManager};
 use gtk::CssProvider;
 
+/// Applies the GNOME theme to the application window.
 pub fn setup_theme(window: &ApplicationWindow) {
     let provider = CssProvider::new();
     provider.load_from_string(GNOME_COLORS);

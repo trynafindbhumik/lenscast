@@ -7,12 +7,14 @@ use std::process::Command;
 const SERVICE_TYPE_PAIRING: &str = "_adb-tls-pairing._tcp.local.";
 const SERVICE_TYPE_CONNECT: &str = "_adb-tls-connect._tcp.local.";
 
+/// Service for wireless ADB pairing using mDNS.
 pub struct PairService {
     pub service_name: String,
     pub password: String,
     mdns: ServiceDaemon,
 }
 
+/// Device information discovered during pairing.
 #[derive(Clone, Debug)]
 pub struct DeviceInfo {
     pub address: Ipv4Addr,
@@ -32,7 +34,7 @@ impl PairService {
         let mdns = ServiceDaemon::new()?;
         let service_name = format!("adb-wireless-{}", random_number_string(6));
         let password = random_number_string(8);
-        
+
         Ok(Self {
             service_name,
             password,
@@ -40,10 +42,12 @@ impl PairService {
         })
     }
 
+    /// Returns the WiFi pairing QR code payload string.
     pub fn qr_text(&self) -> String {
         format!("WIFI:T:ADB;S:{};P:{};;", self.service_name, self.password)
     }
 
+    /// Registers the pairing service on the local network.
     pub fn start_discovery(&self) -> Result<(), Box<dyn std::error::Error>> {
         let service_info = ServiceInfo::new(
             SERVICE_TYPE_PAIRING,
@@ -57,20 +61,19 @@ impl PairService {
         Ok(())
     }
 
+    /// Waits for a device to connect and returns its address and ports.
     pub fn wait_for_pairing(&self) -> Result<DeviceInfo, Box<dyn std::error::Error>> {
-        // Step 1: Browse for pairing service response
         let receiver = self.mdns.browse(SERVICE_TYPE_PAIRING)?;
-        
+
         let (address, pairing_port) = loop {
             match receiver.recv() {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
                     if info.get_fullname().contains(&self.service_name) {
                         let client_addresses = info.get_addresses_v4();
                         let port = info.get_port();
-                        
+
                         let _ = self.mdns.stop_browse(SERVICE_TYPE_PAIRING);
-                        
-                        // Filter for private IP and break
+
                         if let Some(addr) = client_addresses
                             .iter()
                             .find(|addr| addr.is_private())
@@ -89,7 +92,7 @@ impl PairService {
             }
         };
 
-        // Step 2: Browse for connect service (debugging port)
+        // Browse for connect service to get debugging port
         let receiver = self.mdns.browse(SERVICE_TYPE_CONNECT)?;
         let start_time = std::time::Instant::now();
         let timeout = Duration::from_secs(15);
@@ -102,7 +105,7 @@ impl PairService {
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
                     let port = info.get_port();
-                    
+
                     if info.get_addresses_v4().iter().any(|&&addr| addr == address) {
                         let _ = self.mdns.stop_browse(SERVICE_TYPE_CONNECT);
                         break port;
@@ -126,11 +129,11 @@ impl PairService {
         })
     }
 
+    /// Pairs with device and establishes connection.
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,
     ) -> Result<DeviceInfo, String> {
-        // adb pair
         let pair_output = Command::new("adb")
             .args([
                 "pair",
@@ -147,7 +150,6 @@ impl PairService {
             ));
         }
 
-        // adb connect
         let connect_output = Command::new("adb")
             .args([
                 "connect",

@@ -1,6 +1,7 @@
 use gtk::prelude::*;
 use gtk::{Label, Orientation};
 
+/// Creates the main content area shown when no device is selected.
 pub fn create_content_area() -> gtk::Box {
     let content_area = gtk::Box::builder()
         .orientation(Orientation::Vertical)

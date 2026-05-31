@@ -3,9 +3,8 @@ use std::rc::Rc;
 
 use crate::ui::connect_modal::show_connect_modal;
 
-/// Opens the "Add Device" modal — Step 1 (device name).
-/// `on_success` is called after the device is successfully paired; the caller
-/// receives the chosen device name, address, and port so it can add it to the sidebar.
+/// Opens the "Add Device" modal - Step 1 for entering device name.
+/// on_success callback receives (name, address, port) after successful pairing.
 pub fn show_add_device_modal(
     parent: &adw::ApplicationWindow,
     on_success: Box<dyn Fn(String, String, u16)>,
@@ -28,7 +27,6 @@ pub fn show_add_device_modal(
     header.add_css_class("flat");
     toolbar_view.add_top_bar(&header);
 
-    //  Outer wrapper — two springs keep content vertically centered 
     let outer = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .vexpand(true)
@@ -162,11 +160,9 @@ pub fn show_add_device_modal(
     toolbar_view.set_content(Some(&outer));
     modal.set_content(Some(&toolbar_view));
 
-    // Wrap on_success in Rc for multi-closure sharing
     let on_success = Rc::new(on_success);
     let parent_ref = parent.clone();
 
-    //  Validation + Step 2 transition 
     let validate: Rc<dyn Fn()> = Rc::new({
         let entry = entry.clone();
         let error_label = error_label.clone();
@@ -184,7 +180,6 @@ pub fn show_add_device_modal(
                 error_label.set_visible(false);
                 let name = text.trim().to_string();
                 modal.close();
-                // Build the step-2 callback: calls on_success with the device name
                 let on_s = on_success.clone();
                 let name_clone = name.clone();
                 show_connect_modal(

@@ -36,7 +36,6 @@ impl ksni::Tray for LensCastTray {
             StandardItem {
                 label: "Show".into(),
                 activate: std::boxed::Box::new(|tray: &mut Self| {
-                    // try_send is fine here — channel is unbounded and never blocks
                     let _ = tray.sender.try_send(TrayMessage::Show);
                 }),
                 ..Default::default()
@@ -54,8 +53,7 @@ impl ksni::Tray for LensCastTray {
     }
 }
 
-/// Processes tray messages on the GTK main thread using async_channel.
-/// recv().await is non-blocking — it yields to the GLib event loop while waiting.
+/// Processes tray messages on the GTK main thread.
 pub fn start_tray_message_handler(
     app: AdwApplication,
     window_ref: Rc<RefCell<Option<adw::ApplicationWindow>>>,
@@ -74,8 +72,7 @@ pub fn start_tray_message_handler(
                 }
                 TrayMessage::QuitAndDisconnect => {
                     eprintln!("[Tray] Quit with disconnect requested");
-                    
-                    // Disconnect all devices
+
                     let devices = device_store.borrow();
                     for device in devices.iter() {
                         let addr = format!("{}:{}", device.address, device.port);
@@ -84,8 +81,8 @@ pub fn start_tray_message_handler(
                             .args(["disconnect", &addr])
                             .spawn();
                     }
-                    drop(devices); // Release borrow before quitting
-                    
+                    drop(devices);
+
                     if let Some(window) = window_ref.borrow().as_ref() {
                         window.set_visible(false);
                     }

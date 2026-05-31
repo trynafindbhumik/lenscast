@@ -1,14 +1,14 @@
 use adw::prelude::*;
-use qrcode::{ QrCode, Color };
+use qrcode::{QrCode, Color};
 use std::rc::Rc;
 use std::thread;
 
-// ADB interaction types
+/// Pairing method selection.
 #[derive(Debug, Clone)]
 pub enum PairMethod {
-    /// QR Code flow: generate pairing string directly
+    /// QR code flow using mDNS service discovery.
     QrCode,
-    /// Manual flow: `adb pair <ip>:<port> <code>`
+    /// Manual flow via `adb pair <ip>:<port> <code>`.
     Manual {
         ip: String,
         port: String,
@@ -16,17 +16,17 @@ pub enum PairMethod {
     },
 }
 
+/// Events emitted during the pairing process.
 #[derive(Debug)]
 pub enum PairEvent {
-    /// Generated pairing string
+    /// QR code payload generated.
     DecodedString(String),
-    /// Pairing successful with device address and port
+    /// Pairing succeeded with device address and port.
     PairSuccess(String, u16),
     PairFailed(String),
-    #[allow(dead_code)] StatusUpdate(String),
 }
 
-// Native ADB wireless pairing via mDNS
+/// Runs QR-based pairing via mDNS discovery.
 fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     let service = match crate::adb::pair_service::PairService::new() {
         Ok(s) => s,
@@ -82,7 +82,7 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     });
 }
 
-// Manual pairing via `adb pair <ip>:<port> <code>`
+/// Runs manual pairing via `adb pair <ip>:<port> <code>`.
 fn run_adb_pair_manual(
     ip: String,
     port: String,
@@ -120,11 +120,9 @@ fn run_adb_pair_manual(
         let mut chunk_buf = vec![0u8; 4096];
         let mut found_success = false;
 
-        // Read from both stdout and stderr
         loop {
             let mut active = false;
 
-            // Read stdout
             match stdout.read(&mut chunk_buf) {
                 Ok(0) => {}
                 Ok(n) => {
@@ -157,7 +155,6 @@ fn run_adb_pair_manual(
                 Err(_) => {}
             }
 
-            // Read stderr
             match stderr.read(&mut chunk_buf) {
                 Ok(0) => {}
                 Ok(n) => {
@@ -206,7 +203,7 @@ fn run_adb_pair_manual(
     let _ = child.wait();
 }
 
-// GTK orchestration
+/// Configuration for the pairing process.
 struct PairingConfig {
     method: PairMethod,
     stack: gtk::Stack,
@@ -317,16 +314,12 @@ fn start_pairing(config: PairingConfig) {
                     break;
                 }
 
-                #[allow(unused_variables)]
-                PairEvent::StatusUpdate(_status) => {
-                    // Optional: log status updates for debugging
                 }
-            }
         }
     });
 }
 
-// Public entry point
+/// Opens the connection modal (Step 2) for device pairing.
 pub fn show_connect_modal(
     parent: &adw::ApplicationWindow,
     device_name: String,
@@ -353,7 +346,6 @@ pub fn show_connect_modal(
 
     let on_success: Rc<dyn Fn(String, u16)> = Rc::from(on_success);
 
-    // Two-panel connect page
     let (connect_page, error_lbl, qr_image, spinner, loading_lbl) = build_connect_page(
         &device_name,
         stack.clone(),
@@ -362,7 +354,6 @@ pub fn show_connect_modal(
     );
     stack.add_named(&connect_page, Some("connect"));
 
-    // Pairing spinner page
     let (pairing_page, pair_spinner) = build_status_page(
         "Pairing Device…",
         &format!("Running pairing for \"{}\" ", device_name),
@@ -372,7 +363,6 @@ pub fn show_connect_modal(
 
     stack.set_visible_child_name("connect");
 
-    // Spinner auto-start/stop
     stack.connect_visible_child_notify({
         let sp = pair_spinner.clone();
         move |s| {
@@ -393,7 +383,6 @@ pub fn show_connect_modal(
     modal.set_content(Some(&tv));
     modal.present();
 
-    // Start QR pairing flow
     start_pairing(PairingConfig {
         method: PairMethod::QrCode,
         stack: stack.clone(),
@@ -407,7 +396,7 @@ pub fn show_connect_modal(
     });
 }
 
-// Page builders
+/// Builds the main connection page with QR and manual panels.
 fn build_connect_page(
     device_name: &str,
     stack: gtk::Stack,
@@ -441,7 +430,6 @@ fn build_connect_page(
     root.append(&title);
     root.append(&subtitle);
 
-    // Two panels side-by-side
     let panels = gtk::Box
         ::builder()
         .orientation(gtk::Orientation::Horizontal)
@@ -458,7 +446,6 @@ fn build_connect_page(
     panels.append(&right);
     root.append(&panels);
 
-    // Shared error label
     let error_lbl = gtk::Label
         ::builder()
         .label(" ")
@@ -471,13 +458,11 @@ fn build_connect_page(
     error_lbl.set_visible(false);
     root.append(&error_lbl);
 
-    // "Pair Device" button for manual flow
     let pair_btn = gtk::Button::builder().label("Pair via IP/Port").margin_top(4).build();
     pair_btn.add_css_class("suggested-action");
     pair_btn.add_css_class("step2-connect-btn");
     root.append(&pair_btn);
 
-    // Wire up button handler
     let dn = device_name.to_string();
     pair_btn.connect_clicked({
         let ip_e = ip_e.clone();
@@ -542,6 +527,7 @@ fn build_connect_page(
     (root, error_lbl, qr_image, spinner, loading_lbl)
 }
 
+/// Builds the manual connection panel.
 fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     let panel = gtk::Box
         ::builder()
@@ -559,7 +545,6 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     heading.add_css_class("step2-panel-heading");
     panel.append(&heading);
 
-    // Device IP
     let ip_lbl = gtk::Label
         ::builder()
         .label("Device IP")
@@ -573,7 +558,6 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     ip_e.add_css_class("step2-field-entry");
     panel.append(&ip_e);
 
-    // Port
     let port_lbl = gtk::Label
         ::builder()
         .label("Pairing Port")
@@ -588,7 +572,6 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     port_e.add_css_class("step2-field-entry");
     panel.append(&port_e);
 
-    // Pairing Code
     let code_lbl = gtk::Label
         ::builder()
         .label("Pairing Code")
@@ -615,7 +598,6 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     hint.add_css_class("step2-qr-hint");
     panel.append(&hint);
 
-    // Clear error on change
     ip_e.connect_changed({
         let e = ip_e.clone();
         move |_| e.remove_css_class("error")
@@ -632,7 +614,7 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     (panel, ip_e, port_e, code_e)
 }
 
-/// Right panel: shows loading spinner, then the generated QR code.
+/// Builds the QR code display panel.
 fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
     let panel = gtk::Box
         ::builder()
@@ -663,10 +645,10 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
 
         let provider = gtk::CssProvider::new();
         provider.load_from_string(
-            ".qr-container { 
-            background-color: white; 
-            padding: 16px; 
-            border-radius: 8px; 
+            ".qr-container {
+            background-color: white;
+            padding: 16px;
+            border-radius: 8px;
         }"
         );
 
@@ -688,7 +670,6 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
 
     panel.append(&qr_container);
 
-    // Loading spinner (centered in same container area)
     let spinner = gtk::Spinner
         ::builder()
         .width_request(32)
@@ -718,7 +699,7 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
     (panel, qr_image, spinner, loading_lbl)
 }
 
-
+/// Builds the pairing-in-progress status page.
 fn build_status_page(
     title_text: &str,
     subtitle_text: &str,
