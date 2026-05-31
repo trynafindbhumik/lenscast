@@ -1,6 +1,5 @@
 use adw::prelude::*;
 use qrcode::{ QrCode, Color };
-use std::cell::RefCell;
 use std::rc::Rc;
 use std::thread;
 
@@ -9,10 +8,11 @@ use std::thread;
 pub enum PairMethod {
     /// QR Code flow: generate pairing string directly
     QrCode,
-    /// Manual flow: `adb pair <ip>:<port>`
+    /// Manual flow: `adb pair <ip>:<port> <code>`
     Manual {
         ip: String,
         port: String,
+        code: String,
     },
 }
 
@@ -20,18 +20,10 @@ pub enum PairMethod {
 pub enum PairEvent {
     /// Generated pairing string
     DecodedString(String),
-    /// Manual pairing: waiting for 6-digit code from user
-    NeedsCode,
     /// Pairing successful with device address and port
     PairSuccess(String, u16),
     PairFailed(String),
     #[allow(dead_code)] StatusUpdate(String),
-}
-
-#[derive(Debug, Clone)]
-pub enum CodeSubmit {
-    Submit(String),
-    Cancel,
 }
 
 // Native ADB wireless pairing via mDNS
@@ -90,20 +82,20 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     });
 }
 
-// Manual pairing via `adb pair <ip>:<port>`
+// Manual pairing via `adb pair <ip>:<port> <code>`
 fn run_adb_pair_manual(
     ip: String,
     port: String,
+    code: String,
     event_tx: async_channel::Sender<PairEvent>,
-    code_rx: async_channel::Receiver<CodeSubmit>
 ) {
     let addr = format!("{}:{}", ip.trim(), port.trim());
     eprintln!("[Manual] Starting pairing with: {}", addr);
-    
+
     let mut child = match
         std::process::Command
             ::new("adb")
-            .args(["pair", &addr])
+            .args(["pair", &addr, &code])
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -116,177 +108,101 @@ fn run_adb_pair_manual(
         }
     };
 
-    let stdin = child.stdin.take().expect("stdin piped");
-    let stdout = child.stdout.take().expect("stdout piped");
-    let stderr = child.stderr.take().expect("stderr piped");
+    let mut stdout = child.stdout.take().expect("stdout piped");
+    let mut stderr = child.stderr.take().expect("stderr piped");
 
-    let (stream_tx, stream_rx) = std::sync::mpsc::channel();
-
-    let stream_tx_read = stream_tx.clone();
-    let reader_thread = thread::spawn(move || {
+    let event_tx_reader = event_tx.clone();
+    let ip_clone = ip.clone();
+    let port_clone = port.clone();
+    thread::spawn(move || {
         use std::io::Read;
-        
-        // Read stdout in chunks
-        {
-            let mut reader = stdout;
-            let mut chunk_buf = vec![0u8; 4096];
-            let mut accumulated = String::new();
-            
-            loop {
-                match reader.read(&mut chunk_buf) {
-                    Ok(0) => {
-                        if !accumulated.trim().is_empty() {
-                            let _ = stream_tx_read.send(("stdout", accumulated.trim().to_string()));
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&chunk_buf[..n]);
-                        accumulated.push_str(&chunk);
-                        
-                        while let Some(newline_pos) = accumulated.find('\n') {
-                            let line = accumulated[..newline_pos].to_string();
-                            accumulated = accumulated[newline_pos + 1..].to_string();
-                            
-                            if !line.trim().is_empty() {
-                                let _ = stream_tx_read.send(("stdout", line.trim().to_string()));
-                            }
-                        }
-                        
-                        if accumulated.contains("Enter pairing code:") ||
-                           accumulated.to_lowercase().contains("enter code") ||
-                           accumulated.to_lowercase().contains("code:") {
-                            let _ = stream_tx_read.send(("stdout_prompt", accumulated.trim().to_string()));
-                            accumulated.clear();
-                        }
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-        }
-        
-        // Read stderr in chunks
-        {
-            let mut reader = stderr;
-            let mut chunk_buf = vec![0u8; 4096];
-            let mut accumulated = String::new();
-            
-            loop {
-                match reader.read(&mut chunk_buf) {
-                    Ok(0) => {
-                        if !accumulated.trim().is_empty() {
-                            let _ = stream_tx_read.send(("stderr", accumulated.trim().to_string()));
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&chunk_buf[..n]);
-                        accumulated.push_str(&chunk);
-                        
-                        while let Some(newline_pos) = accumulated.find('\n') {
-                            let line = accumulated[..newline_pos].to_string();
-                            accumulated = accumulated[newline_pos + 1..].to_string();
-                            
-                            if !line.trim().is_empty() {
-                                let _ = stream_tx_read.send(("stderr", line.trim().to_string()));
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    
-    drop(stream_tx);
 
-    // Handle events and code submission
-    let event_tx_main = event_tx.clone();
-    let code_rx_main = code_rx.clone();
-    let main_thread = thread::spawn(move || {
-        use std::io::Write;
-        let mut stdin = stdin;
-        let mut code_prompt_detected = false;
-        let mut attempt_count = 0;
-        let max_attempts = 300;
-        
+        let mut chunk_buf = vec![0u8; 4096];
+        let mut found_success = false;
+
+        // Read from both stdout and stderr
         loop {
-            attempt_count += 1;
-            if attempt_count > max_attempts {
-                let _ = event_tx_main.try_send(
-                    PairEvent::PairFailed("Pairing timeout - no response from device".to_string())
-                );
+            let mut active = false;
+
+            // Read stdout
+            match stdout.read(&mut chunk_buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    active = true;
+                    let chunk = String::from_utf8_lossy(&chunk_buf[..n]);
+                    for line in chunk.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let lower = trimmed.to_lowercase();
+                            eprintln!("[Manual][stdout] {}", trimmed);
+                            if !found_success &&
+                               (lower.contains("successfully paired") ||
+                                lower.contains("pairing successful") ||
+                                lower.contains("pairing established") ||
+                                (lower.contains("paired") && lower.contains("success"))) {
+                                found_success = true;
+                                let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
+                                    ip_clone.clone(),
+                                    port_clone.parse().unwrap_or(5555)
+                                ));
+                            }
+                            if lower.contains("error:") || lower.contains("failed") ||
+                               lower.contains("refused") || lower.contains("connection refused") {
+                                let _ = event_tx_reader.try_send(PairEvent::PairFailed(trimmed.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+
+            // Read stderr
+            match stderr.read(&mut chunk_buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    active = true;
+                    let chunk = String::from_utf8_lossy(&chunk_buf[..n]);
+                    for line in chunk.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            let lower = trimmed.to_lowercase();
+                            eprintln!("[Manual][stderr] {}", trimmed);
+                            if !found_success &&
+                               (lower.contains("successfully paired") ||
+                                lower.contains("pairing successful") ||
+                                lower.contains("pairing established") ||
+                                (lower.contains("paired") && lower.contains("success"))) {
+                                found_success = true;
+                                let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
+                                    ip_clone.clone(),
+                                    port_clone.parse().unwrap_or(5555)
+                                ));
+                            }
+                            if lower.contains("error:") || lower.contains("failed") ||
+                               lower.contains("refused") || lower.contains("connection refused") {
+                                let _ = event_tx_reader.try_send(PairEvent::PairFailed(trimmed.to_string()));
+                                return;
+                            }
+                        }
+                    }
+                }
+                Err(_) => {}
+            }
+
+            if !active {
+                if !found_success {
+                    let _ = event_tx_reader.try_send(
+                        PairEvent::PairFailed("Pairing process ended unexpectedly".to_string())
+                    );
+                }
                 break;
             }
-            
-            match stream_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-                Ok((source, line)) => {
-                    let trimmed = line.trim();
-                    let lower_trimmed = trimmed.to_lowercase();
-                    
-                    // Detect pairing code prompt
-                    if !code_prompt_detected &&
-                       (source == "stdout_prompt" ||
-                        lower_trimmed.contains("enter pairing code") ||
-                        lower_trimmed.contains("enter code") ||
-                        lower_trimmed.contains("pairing code:") ||
-                        lower_trimmed.ends_with("code:")) {
-                        let _ = event_tx_main.try_send(PairEvent::NeedsCode);
-                        code_prompt_detected = true;
-                        // Don't reset attempt_count here - let the timeout handle it
-                    }
-                    
-                    // Detect success
-                    if lower_trimmed.contains("successfully paired") ||
-                       lower_trimmed.contains("pairing successful") ||
-                       lower_trimmed.contains("pairing established") ||
-                       (lower_trimmed.contains("paired") && lower_trimmed.contains("success")) {
-                        eprintln!("[Manual] Pairing success detected, sending PairSuccess({}, {})", ip, port);
-                        let _ = event_tx_main.try_send(PairEvent::PairSuccess(ip.clone(), port.parse().unwrap_or(5555)));
-                        break;
-                    }
-                    
-                    // Detect errors (only if haven't seen prompt yet)
-                    if !code_prompt_detected &&
-                       (lower_trimmed.contains("error:") ||
-                        lower_trimmed.contains("failed") ||
-                        lower_trimmed.contains("refused") ||
-                        lower_trimmed.contains("connection refused")) {
-                        let _ = event_tx_main.try_send(
-                            PairEvent::PairFailed(trimmed.to_string())
-                        );
-                        break;
-                    }
-                    
-                    attempt_count = 0;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Check if user submitted a code
-                    if let Ok(CodeSubmit::Submit(code)) = code_rx_main.try_recv() {
-                        if writeln!(stdin, "{}", code.trim()).is_ok() {
-                            let _ = stdin.flush();
-                            code_prompt_detected = false;
-                        }
-                    } else if let Ok(CodeSubmit::Cancel) = code_rx_main.try_recv() {
-                        let _ = event_tx_main.try_send(
-                            PairEvent::PairFailed("User cancelled".to_string())
-                        );
-                        break;
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    break;
-                }
-            }
+
+            thread::sleep(std::time::Duration::from_millis(10));
         }
     });
 
-    let _ = main_thread.join();
-    let _ = reader_thread.join();
     let _ = child.wait();
 }
 
@@ -295,7 +211,6 @@ struct PairingConfig {
     method: PairMethod,
     stack: gtk::Stack,
     modal: adw::Window,
-    code_sender: Rc<RefCell<Option<async_channel::Sender<CodeSubmit>>>>,
     error_lbl: gtk::Label,
     qr_image: gtk::Image,
     spinner: gtk::Spinner,
@@ -317,8 +232,6 @@ fn start_pairing(config: PairingConfig) {
     }
 
     let (pair_tx, pair_rx) = async_channel::bounded::<PairEvent>(8);
-    let (code_tx, code_rx) = async_channel::bounded::<CodeSubmit>(1);
-    *config.code_sender.borrow_mut() = Some(code_tx);
 
     match method {
         PairMethod::QrCode => {
@@ -327,11 +240,10 @@ fn start_pairing(config: PairingConfig) {
                 run_native_pairing_qr(tx);
             });
         }
-        PairMethod::Manual { ip, port } => {
+        PairMethod::Manual { ip, port, code } => {
             let tx = pair_tx.clone();
-            let rx = code_rx.clone();
             thread::spawn(move || {
-                run_adb_pair_manual(ip, port, tx, rx);
+                run_adb_pair_manual(ip, port, code, tx);
             });
         }
     }
@@ -355,7 +267,7 @@ fn start_pairing(config: PairingConfig) {
 
                     if let Ok(code) = QrCode::new(decoded.as_bytes()) {
                         let size = code.width();
-                        let display_size = 300;
+                        let display_size = 200;
                         let module_px = display_size / size;
                         let actual_size = module_px * size;
 
@@ -389,10 +301,6 @@ fn start_pairing(config: PairingConfig) {
                         qr_image_c.set_paintable(Some(&texture));
                         qr_image_c.set_visible(true);
                     }
-                }
-
-                PairEvent::NeedsCode => {
-                    stack_c.set_visible_child_name("enter_code");
                 }
 
                 PairEvent::PairSuccess(address, port) => {
@@ -443,11 +351,6 @@ pub fn show_connect_modal(
         .build();
     toast_overlay.set_child(Some(&stack));
 
-    // Shared channel sender
-    let code_sender: Rc<RefCell<Option<async_channel::Sender<CodeSubmit>>>> = Rc::new(
-        RefCell::new(None)
-    );
-
     let on_success: Rc<dyn Fn(String, u16)> = Rc::from(on_success);
 
     // Two-panel connect page
@@ -455,7 +358,6 @@ pub fn show_connect_modal(
         &device_name,
         stack.clone(),
         modal.clone(),
-        code_sender.clone(),
         on_success.clone()
     );
     stack.add_named(&connect_page, Some("connect"));
@@ -467,10 +369,6 @@ pub fn show_connect_modal(
         "Keep your phone unlocked with Wireless debugging enabled"
     );
     stack.add_named(&pairing_page, Some("pairing"));
-
-    // Enter 6-digit pairing code page
-    let code_page = build_enter_code_page(&device_name, &stack, code_sender.clone(), &error_lbl);
-    stack.add_named(&code_page, Some("enter_code"));
 
     stack.set_visible_child_name("connect");
 
@@ -500,7 +398,6 @@ pub fn show_connect_modal(
         method: PairMethod::QrCode,
         stack: stack.clone(),
         modal: modal.clone(),
-        code_sender: code_sender.clone(),
         error_lbl: error_lbl.clone(),
         qr_image: qr_image.clone(),
         spinner: spinner.clone(),
@@ -515,7 +412,6 @@ fn build_connect_page(
     device_name: &str,
     stack: gtk::Stack,
     modal: adw::Window,
-    code_sender: Rc<RefCell<Option<async_channel::Sender<CodeSubmit>>>>,
     on_success: Rc<dyn Fn(String, u16)>
 ) -> (gtk::Box, gtk::Label, gtk::Image, gtk::Spinner, gtk::Label) {
     let root = gtk::Box
@@ -552,7 +448,7 @@ fn build_connect_page(
         .vexpand(true)
         .build();
 
-    let (left, ip_e, port_e) = build_manual_panel();
+    let (left, ip_e, port_e, code_e) = build_manual_panel();
     let divider = gtk::Separator::new(gtk::Orientation::Vertical);
     divider.add_css_class("step2-panel-divider");
     let (right, qr_image, spinner, loading_lbl) = build_qr_panel();
@@ -586,10 +482,10 @@ fn build_connect_page(
     pair_btn.connect_clicked({
         let ip_e = ip_e.clone();
         let port_e = port_e.clone();
+        let code_e = code_e.clone();
         let err = error_lbl.clone();
         let stack = stack.clone();
         let modal = modal.clone();
-        let cs = code_sender.clone();
         let dn = dn.clone();
         let qr_image = qr_image.clone();
         let spinner = spinner.clone();
@@ -599,6 +495,7 @@ fn build_connect_page(
         move |_| {
             let ip = ip_e.text().to_string();
             let port = port_e.text().to_string();
+            let code = code_e.text().to_string();
 
             if ip.trim().is_empty() {
                 err.set_label("Please enter the device IP address.");
@@ -614,18 +511,24 @@ fn build_connect_page(
                 port_e.grab_focus();
                 return;
             }
+            if code.trim().is_empty() || code.trim().len() != 6 || !code.trim().chars().all(|c| c.is_ascii_digit()) {
+                err.set_label("Please enter the 6-digit pairing code.");
+                err.set_visible(true);
+                code_e.add_css_class("error");
+                code_e.grab_focus();
+                return;
+            }
             err.set_visible(false);
             ip_e.remove_css_class("error");
             port_e.remove_css_class("error");
+            code_e.remove_css_class("error");
 
             stack.set_visible_child_name("pairing");
 
-            // Start manual pairing flow
             start_pairing(PairingConfig {
-                method: PairMethod::Manual { ip, port },
+                method: PairMethod::Manual { ip, port, code },
                 stack: stack.clone(),
                 modal: modal.clone(),
-                code_sender: cs.clone(),
                 error_lbl: err.clone(),
                 qr_image: qr_image.clone(),
                 spinner: spinner.clone(),
@@ -639,7 +542,7 @@ fn build_connect_page(
     (root, error_lbl, qr_image, spinner, loading_lbl)
 }
 
-fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry) {
+fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     let panel = gtk::Box
         ::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -685,9 +588,26 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry) {
     port_e.add_css_class("step2-field-entry");
     panel.append(&port_e);
 
+    // Pairing Code
+    let code_lbl = gtk::Label
+        ::builder()
+        .label("Pairing Code")
+        .halign(gtk::Align::Start)
+        .margin_top(10)
+        .margin_bottom(4)
+        .build();
+    code_lbl.add_css_class("step2-field-label");
+    panel.append(&code_lbl);
+
+    let code_e = gtk::Entry::builder().placeholder_text("000000").hexpand(true).build();
+    code_e.add_css_class("step2-field-entry");
+    code_e.set_input_purpose(gtk::InputPurpose::Digits);
+    code_e.set_max_length(6);
+    panel.append(&code_e);
+
     let hint = gtk::Label
         ::builder()
-        .label("Use the pairing port shown under\nWireless Debugging on your phone.")
+        .label("Use the pairing port and code shown under\nWireless Debugging on your phone.")
         .halign(gtk::Align::Start)
         .wrap(true)
         .margin_top(12)
@@ -704,8 +624,12 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry) {
         let e = port_e.clone();
         move |_| e.remove_css_class("error")
     });
+    code_e.connect_changed({
+        let e = code_e.clone();
+        move |_| e.remove_css_class("error")
+    });
 
-    (panel, ip_e, port_e)
+    (panel, ip_e, port_e, code_e)
 }
 
 /// Right panel: shows loading spinner, then the generated QR code.
@@ -754,7 +678,7 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
     });
     let qr_image = gtk::Image
         ::builder()
-        .pixel_size(300)
+        .pixel_size(200)
         .visible(false)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -794,151 +718,6 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
     (panel, qr_image, spinner, loading_lbl)
 }
 
-fn build_enter_code_page(
-    device_name: &str,
-    stack: &gtk::Stack,
-    code_sender: Rc<RefCell<Option<async_channel::Sender<CodeSubmit>>>>,
-    connect_error_lbl: &gtk::Label
-) -> gtk::Box {
-    let page = gtk::Box
-        ::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .halign(gtk::Align::Center)
-        .valign(gtk::Align::Center)
-        .vexpand(true)
-        .spacing(0)
-        .margin_start(48)
-        .margin_end(48)
-        .build();
-
-    let icon_wrap = gtk::Box::builder().halign(gtk::Align::Center).margin_bottom(20).build();
-    icon_wrap.add_css_class("code-icon-wrap");
-    let lock_icon = gtk::Image::from_icon_name("system-lock-screen-symbolic");
-    lock_icon.set_pixel_size(40);
-    lock_icon.add_css_class("code-icon");
-    icon_wrap.append(&lock_icon);
-    page.append(&icon_wrap);
-
-    let title = gtk::Label
-        ::builder()
-        .label("Enter Pairing Code")
-        .halign(gtk::Align::Center)
-        .margin_bottom(6)
-        .build();
-    title.add_css_class("code-title");
-    page.append(&title);
-
-    let subtitle = gtk::Label
-        ::builder()
-        .label(
-            format!("Your phone shows a 6-digit code for \"{}\"\nEnter it below to complete pairing", device_name)
-        )
-        .halign(gtk::Align::Center)
-        .justify(gtk::Justification::Center)
-        .wrap(true)
-        .margin_bottom(22)
-        .build();
-    subtitle.add_css_class("code-subtitle");
-    page.append(&subtitle);
-
-    // 6-digit entry
-    let entry = gtk::Entry
-        ::builder()
-        .placeholder_text("000000")
-        .max_length(6)
-        .input_purpose(gtk::InputPurpose::Digits)
-        .halign(gtk::Align::Center)
-        .width_chars(10)
-        .build();
-    entry.add_css_class("code-entry");
-    page.append(&entry);
-
-    // Inline error
-    let err_lbl = gtk::Label::builder().label(" ").halign(gtk::Align::Center).margin_top(6).build();
-    err_lbl.add_css_class("step2-error-label");
-    err_lbl.set_visible(false);
-    page.append(&err_lbl);
-
-    // Buttons
-    let btn_row = gtk::Box
-        ::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(10)
-        .halign(gtk::Align::Center)
-        .margin_top(18)
-        .build();
-
-    let cancel_btn = gtk::Button::builder().label("Cancel").build();
-    cancel_btn.add_css_class("code-cancel-btn");
-
-    let submit_btn = gtk::Button::builder().label("Confirm Pairing").build();
-    submit_btn.add_css_class("suggested-action");
-    submit_btn.add_css_class("code-submit-btn");
-
-    btn_row.append(&cancel_btn);
-    btn_row.append(&submit_btn);
-    page.append(&btn_row);
-
-    // Submit logic
-    let do_submit: Rc<dyn Fn()> = Rc::new({
-        let entry = entry.clone();
-        let err_lbl = err_lbl.clone();
-        let code_sender = code_sender.clone();
-        let stack = stack.clone();
-        let conn_error_lbl = connect_error_lbl.clone();
-
-        move || {
-            let code = entry.text().to_string();
-            let trimmed = code.trim().to_string();
-
-            if trimmed.len() != 6 || !trimmed.chars().all(|c| c.is_ascii_digit()) {
-                err_lbl.set_label("Please enter the exact 6-digit code.");
-                err_lbl.set_visible(true);
-                return;
-            }
-            err_lbl.set_visible(false);
-
-            match code_sender.borrow().as_ref() {
-                Some(tx) => {
-                    let _ = tx.try_send(CodeSubmit::Submit(trimmed));
-                    stack.set_visible_child_name("pairing");
-                }
-                None => {
-                    conn_error_lbl.set_label("Internal error: no active pairing session.");
-                    conn_error_lbl.set_visible(true);
-                    stack.set_visible_child_name("connect");
-                }
-            }
-        }
-    });
-
-    submit_btn.connect_clicked({
-        let f = do_submit.clone();
-        move |_| f()
-    });
-    entry.connect_activate({
-        let f = do_submit.clone();
-        move |_| f()
-    });
-    entry.connect_changed({
-        let err_lbl = err_lbl.clone();
-        move |_| err_lbl.set_visible(false)
-    });
-
-    // Cancel
-    cancel_btn.connect_clicked({
-        let stack = stack.clone();
-        let code_sender = code_sender.clone();
-        move |_| {
-            if let Some(tx) = code_sender.borrow().as_ref() {
-                let _ = tx.try_send(CodeSubmit::Cancel);
-            }
-            stack.set_visible_child_name("connect");
-        }
-    });
-
-    page
-}
 
 fn build_status_page(
     title_text: &str,

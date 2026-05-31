@@ -103,7 +103,6 @@ impl PairService {
                 Ok(ServiceEvent::ServiceResolved(info)) => {
                     let port = info.get_port();
                     
-                    // ✅ FIXED: Double dereference to match original logic
                     if info.get_addresses_v4().iter().any(|&&addr| addr == address) {
                         let _ = self.mdns.stop_browse(SERVICE_TYPE_CONNECT);
                         break port;

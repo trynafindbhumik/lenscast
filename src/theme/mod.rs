@@ -2,7 +2,6 @@ mod css;
 
 pub use css::GNOME_COLORS;
 
-use adw::prelude::*;
 use adw::{ApplicationWindow, StyleManager};
 use gtk::CssProvider;
 
@@ -10,7 +9,7 @@ pub fn setup_theme(window: &ApplicationWindow) {
     let provider = CssProvider::new();
     provider.load_from_string(GNOME_COLORS);
 
-    let display: gdk::Display = RootExt::display(window);
+    let display: gdk::Display = adw::prelude::RootExt::display(window);
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
