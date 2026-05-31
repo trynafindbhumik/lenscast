@@ -43,7 +43,7 @@ cargo build --release
 
 ## Usage
 
-1. **Connect your Android device** via USB with USB ging enabled, or connect wirelessly
+1. **Connect your Android device** via USB with USB debugging enabled, or connect wirelessly
 2. **Start LensCast** from your application menu or terminal
 3. **Add a device** using "New Connection" button
 4. **Enter device details** (IP and Port) or scan QR code
@@ -76,7 +76,7 @@ lenscast/
 ## Requirements
 
 - Linux with GTK 3 compatible desktop environment
-- Android device with USB ging or wireless ging enabled
+- Android device with USB debugging or wireless debugging enabled
 - Network connection (same WiFi for wireless streaming)
 
 ## License

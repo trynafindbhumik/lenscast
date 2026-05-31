@@ -90,8 +90,11 @@ pub fn run() {
         let refresh_window = window.clone();
         let refresh_listbox = device_listbox.clone();
         let refresh_holder_for_timer = refresh_holder.clone();
-        
-        gtk::glib::timeout_add_local(Duration::from_secs(5), move || {
+
+        let source_id: Rc<RefCell<Option<glib::source::SourceId>>> = Rc::new(RefCell::new(None));
+        let source_id_clone = source_id.clone();
+
+        *source_id.borrow_mut() = Some(gtk::glib::timeout_add_local(Duration::from_secs(5), move || {
             if refresh_connected_status(&refresh_store) {
                 // Connection status changed, rebuild the list
                 if let Some(r) = refresh_holder_for_timer.borrow().clone() {
@@ -99,7 +102,7 @@ pub fn run() {
                 }
             }
             gtk::glib::ControlFlow::Continue
-        });
+        }));
 
         // Populate sidebar with initial (empty) state
         refresh();
@@ -132,6 +135,9 @@ pub fn run() {
                         // Persist to disk
                         save_devices(&store.borrow());
 
+                        // Refresh connected status now — device was just paired so it should be live
+                        refresh_connected_status(&store);
+
                         // Rebuild sidebar
                         refresh();
 
@@ -149,7 +155,11 @@ pub fn run() {
         // ── Hide on close (keep running in tray) ──────────────────────────────
         window.connect_close_request({
             let window = window.clone();
+            let source_id_clone = source_id_clone.clone();
             move |_| {
+                if let Some(id) = source_id_clone.borrow_mut().take() {
+                    id.remove();
+                }
                 window.set_visible(false);
                 gtk::glib::Propagation::Stop
             }
