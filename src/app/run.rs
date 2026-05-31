@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use crate::theme::setup_theme;
 use crate::ui;
-use crate::ui::devices::{next_device_id, new_device_store, Device};
+use crate::ui::devices::{next_device_id, new_device_store, save_devices, Device};
 use crate::ui::sidebar::rebuild_device_list;
 
 const APP_ID: &str = "com.lenscast.app";
@@ -95,13 +95,19 @@ pub fn run() {
 
                 ui::show_add_device_modal(
                     &window,
-                    Box::new(move |name: String| {
+                    Box::new(move |name: String, address: String, port: u16| {
+                        eprintln!("[APP] Device added: name='{}', address='{}', port={}", name, address, port);
                         // Add the newly paired device to the store
                         let device = Device {
                             id: next_device_id(),
                             name: name.clone(),
+                            address,
+                            port,
                         };
-                        store.borrow_mut().push(device);
+                        store.borrow_mut().push(device.clone());
+                        
+                        // Persist to disk
+                        save_devices(&store.borrow());
 
                         // Rebuild sidebar
                         refresh();
@@ -135,7 +141,7 @@ pub fn run() {
             let (tx, rx) = async_channel::unbounded::<crate::tray::TrayMessage>();
             let tray = LensCastTray::new(tx);
 
-            start_tray_message_handler(app.clone(), window_ref.clone(), rx);
+            start_tray_message_handler(app.clone(), window_ref.clone(), device_store.clone(), rx);
 
             std::thread::spawn(move || {
                 let rt = match tokio::runtime::Runtime::new() {

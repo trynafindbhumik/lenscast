@@ -5,10 +5,10 @@ use crate::ui::connect_modal::show_connect_modal;
 
 /// Opens the "Add Device" modal — Step 1 (device name).
 /// `on_success` is called after the device is successfully paired; the caller
-/// receives the chosen device name so it can add it to the sidebar.
+/// receives the chosen device name, address, and port so it can add it to the sidebar.
 pub fn show_add_device_modal(
     parent: &adw::ApplicationWindow,
-    on_success: Box<dyn Fn(String)>,
+    on_success: Box<dyn Fn(String, String, u16)>,
 ) {
     let modal = adw::Window::builder()
         .modal(true)
@@ -190,7 +190,7 @@ pub fn show_add_device_modal(
                 show_connect_modal(
                     &parent,
                     name,
-                    Box::new(move || on_s(name_clone.clone())),
+                    Box::new(move |address, port| on_s(name_clone.clone(), address, port)),
                 );
             }
         }

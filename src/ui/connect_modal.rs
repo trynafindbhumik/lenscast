@@ -22,7 +22,8 @@ pub enum PairEvent {
     DecodedString(String),
     /// Manual pairing: waiting for 6-digit code from user
     NeedsCode,
-    PairSuccess,
+    /// Pairing successful with device address and port
+    PairSuccess(String, u16),
     PairFailed(String),
     #[allow(dead_code)] StatusUpdate(String),
 }
@@ -61,14 +62,19 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     std::thread::spawn(move || {
         match service.wait_for_pairing() {
             Ok(device) => {
+                eprintln!("[QR] Device discovered: {}:{}:{}", device.address, device.pairing_port, device.debugging_port);
                 match
                     crate::adb::pair_service::PairService::execute_pair_and_connect(
                         &device,
                         &password
                     )
                 {
-                    Ok(()) => {
-                        let _ = tx.try_send(PairEvent::PairSuccess);
+                    Ok(info) => {
+                        eprintln!("[QR] Pair & connect success: {}:{}", info.address, info.debugging_port);
+                        let _ = tx.try_send(PairEvent::PairSuccess(
+                            info.address.to_string(),
+                            info.debugging_port
+                        ));
                     }
                     Err(e) => {
                         let _ = tx.try_send(PairEvent::PairFailed(e));
@@ -92,6 +98,7 @@ fn run_adb_pair_manual(
     code_rx: async_channel::Receiver<CodeSubmit>
 ) {
     let addr = format!("{}:{}", ip.trim(), port.trim());
+    eprintln!("[Manual] Starting pairing with: {}", addr);
     
     let mut child = match
         std::process::Command
@@ -238,7 +245,8 @@ fn run_adb_pair_manual(
                        lower_trimmed.contains("pairing successful") ||
                        lower_trimmed.contains("pairing established") ||
                        (lower_trimmed.contains("paired") && lower_trimmed.contains("success")) {
-                        let _ = event_tx_main.try_send(PairEvent::PairSuccess);
+                        eprintln!("[Manual] Pairing success detected, sending PairSuccess({}, {})", ip, port);
+                        let _ = event_tx_main.try_send(PairEvent::PairSuccess(ip.clone(), port.parse().unwrap_or(5555)));
                         break;
                     }
                     
@@ -293,7 +301,7 @@ struct PairingConfig {
     spinner: gtk::Spinner,
     loading_lbl: gtk::Label,
     device_name: String,
-    on_success: Rc<dyn Fn()>,
+    on_success: Rc<dyn Fn(String, u16)>,
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -387,9 +395,10 @@ fn start_pairing(config: PairingConfig) {
                     stack_c.set_visible_child_name("enter_code");
                 }
 
-                PairEvent::PairSuccess => {
+                PairEvent::PairSuccess(address, port) => {
+                    eprintln!("[UI] Received PairSuccess event: {}:{}", address, port);
                     modal_c.close();
-                    on_success();
+                    on_success(address, port);
                     break;
                 }
 
@@ -413,7 +422,7 @@ fn start_pairing(config: PairingConfig) {
 pub fn show_connect_modal(
     parent: &adw::ApplicationWindow,
     device_name: String,
-    on_success: Box<dyn Fn()>
+    on_success: Box<dyn Fn(String, u16)>
 ) {
     let modal = adw::Window
         ::builder()
@@ -439,7 +448,7 @@ pub fn show_connect_modal(
         RefCell::new(None)
     );
 
-    let on_success: Rc<dyn Fn()> = Rc::from(on_success);
+    let on_success: Rc<dyn Fn(String, u16)> = Rc::from(on_success);
 
     // Two-panel connect page
     let (connect_page, error_lbl, qr_image, spinner, loading_lbl) = build_connect_page(
@@ -507,7 +516,7 @@ fn build_connect_page(
     stack: gtk::Stack,
     modal: adw::Window,
     code_sender: Rc<RefCell<Option<async_channel::Sender<CodeSubmit>>>>,
-    on_success: Rc<dyn Fn()>
+    on_success: Rc<dyn Fn(String, u16)>
 ) -> (gtk::Box, gtk::Label, gtk::Image, gtk::Spinner, gtk::Label) {
     let root = gtk::Box
         ::builder()

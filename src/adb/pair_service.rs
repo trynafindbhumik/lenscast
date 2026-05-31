@@ -13,6 +13,7 @@ pub struct PairService {
     mdns: ServiceDaemon,
 }
 
+#[derive(Clone, Debug)]
 pub struct DeviceInfo {
     pub address: Ipv4Addr,
     pub pairing_port: u16,
@@ -129,7 +130,7 @@ impl PairService {
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,
-    ) -> Result<(), String> {
+    ) -> Result<DeviceInfo, String> {
         // adb pair
         let pair_output = Command::new("adb")
             .args([
@@ -163,7 +164,7 @@ impl PairService {
             ));
         }
 
-        Ok(())
+        Ok(device.clone())
     }
 }
 

@@ -1,8 +1,9 @@
+use std::process::Command;
 use adw::prelude::*;
 use gtk::{Label, Orientation};
 use std::rc::Rc;
 
-use crate::ui::devices::{Device, DeviceStore};
+use crate::ui::devices::{save_devices, Device, DeviceStore};
 
 /// Returns `(sidebar_box, device_listbox)`.
 /// `device_listbox` is populated/repopulated by `rebuild_device_list`.
@@ -332,6 +333,9 @@ fn show_edit_dialog(
                 d.name = new_name.clone();
             }
             name_lbl.set_label(&new_name);
+            
+            // Save changes to disk
+            save_devices(&store.borrow());
             refresh();
 
             let toast = adw::Toast::builder()
@@ -373,6 +377,23 @@ fn delete_device(
     toast_overlay: &adw::ToastOverlay,
     refresh: &Rc<dyn Fn()>,
 ) {
+    // Get device info before removing
+    let device_address = {
+        let devices = store.borrow();
+        devices.iter()
+            .find(|d| d.id == device_id)
+            .map(|d| format!("{}:{}", d.address, d.port))
+    };
+
+    // Disconnect from the device via adb
+    if let Some(addr) = &device_address {
+        eprintln!("[Delete] Running: adb disconnect {}", addr);
+        let _ = Command::new("adb")
+            .args(["disconnect", addr])
+            .spawn();
+        eprintln!("[Delete] Disconnect spawned for {}", addr);
+    }
+
     // Pull the device out of the store
     let removed: Option<Device> = {
         let mut v = store.borrow_mut();
@@ -391,6 +412,9 @@ fn delete_device(
         .build();
     toast.set_priority(adw::ToastPriority::Normal);
 
+    // Save changes to disk
+    save_devices(&store.borrow());
+    
     // On Undo: put the device back, refresh
     toast.connect_button_clicked({
         let store = store.clone();
@@ -400,6 +424,8 @@ fn delete_device(
             store.borrow_mut().push(device.clone());
             // Sort by id so it re-appears in original order
             store.borrow_mut().sort_by_key(|d| d.id);
+            // Persist to disk
+            save_devices(&store.borrow());
             refresh();
         }
     });
