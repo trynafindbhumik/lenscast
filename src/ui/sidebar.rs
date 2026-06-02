@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::process::Command;
 use adw::prelude::*;
 use gtk::{Label, Orientation};
@@ -5,8 +6,25 @@ use std::rc::Rc;
 
 use crate::ui::devices::{save_devices, Device, DeviceStore};
 
-/// Returns (sidebar_box, device_listbox).
-pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
+/// Shared callback type for refreshing the device list.
+pub(crate) type RefreshFn = Rc<dyn Fn()>;
+
+/// Bundles all dependencies needed to render and edit the device list.
+/// Keeps function signatures short and groups related wiring together.
+#[derive(Clone)]
+pub(crate) struct DeviceListContext {
+    pub listbox: gtk::ListBox,
+    pub store: DeviceStore,
+    pub toast_overlay: adw::ToastOverlay,
+    pub window: adw::ApplicationWindow,
+    pub refresh_fn: RefreshFn,
+    pub on_select: Rc<dyn Fn(Option<u32>)>,
+    pub selected_id: Rc<RefCell<Option<u32>>>,
+    pub on_deselect_fn: Rc<dyn Fn()>,
+}
+
+/// Returns (sidebar_box, device_listbox, selected_device_id_cell).
+pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
     let sidebar = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .build();
@@ -35,24 +53,27 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox) {
     scroll.set_child(Some(&device_listbox));
     sidebar.append(&scroll);
 
-    (sidebar, device_listbox)
+    let selected_device_id: Rc<RefCell<Option<u32>>> = Rc::new(RefCell::new(None));
+
+    (sidebar, device_listbox, selected_device_id)
 }
 
 /// Repopulates the device list after add/edit/delete.
-pub fn rebuild_device_list(
-    listbox: &gtk::ListBox,
-    store: &DeviceStore,
-    toast_overlay: &adw::ToastOverlay,
-    window: &adw::ApplicationWindow,
-    refresh: &Rc<dyn Fn()>,
-) {
-    while let Some(child) = listbox.first_child() {
-        listbox.remove(&child);
+pub fn rebuild_device_list(ctx: &DeviceListContext) {
+    eprintln!("[Sidebar] rebuild_device_list called, clearing listbox");
+
+    // First clear all existing children
+    while let Some(child) = ctx.listbox.first_child() {
+        ctx.listbox.remove(&child);
     }
 
-    let devices = store.borrow().clone();
+    eprintln!("[Sidebar] Listbox cleared");
+
+    let devices = ctx.store.borrow().clone();
+    eprintln!("[Sidebar] Devices count: {}", devices.len());
 
     if devices.is_empty() {
+        eprintln!("[Sidebar] Showing empty state");
         let empty_row = gtk::ListBoxRow::builder()
             .activatable(false)
             .selectable(false)
@@ -64,22 +85,19 @@ pub fn rebuild_device_list(
         lbl.set_margin_top(12);
         lbl.set_margin_bottom(12);
         empty_row.set_child(Some(&lbl));
-        listbox.append(&empty_row);
+        ctx.listbox.append(&empty_row);
     } else {
+        eprintln!("[Sidebar] Building {} device rows", devices.len());
         for device in &devices {
-            let row = build_device_row(device, store, toast_overlay, window, refresh);
-            listbox.append(&row);
+            let row = build_device_row(device, ctx);
+            ctx.listbox.append(&row);
         }
     }
+
+    eprintln!("[Sidebar] rebuild_device_list done");
 }
 
-fn build_device_row(
-    device: &Device,
-    store: &DeviceStore,
-    toast_overlay: &adw::ToastOverlay,
-    window: &adw::ApplicationWindow,
-    refresh: &Rc<dyn Fn()>,
-) -> gtk::ListBoxRow {
+fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow {
     let row_box = gtk::Box::builder()
         .orientation(Orientation::Horizontal)
         .spacing(0)
@@ -117,15 +135,7 @@ fn build_device_row(
         .build();
     menu_btn.add_css_class("device-menu-btn");
 
-    let popover = build_device_popover(
-        device,
-        store,
-        toast_overlay,
-        window,
-        refresh,
-        &name_lbl,
-        &connected_indicator,
-    );
+    let popover = build_device_popover(device, ctx, &name_lbl, &connected_indicator);
     menu_btn.set_popover(Some(&popover));
 
     row_box.append(&icon);
@@ -135,21 +145,58 @@ fn build_device_row(
     row_box.append(&menu_btn);
 
     let row = gtk::ListBoxRow::builder()
-        .activatable(false)
+        .activatable(true)
         .selectable(false)
         .build();
     row.add_css_class("device-row");
     row.set_child(Some(&row_box));
+
+    // Check if this row is selected and apply style
+    let is_selected = *ctx.selected_id.borrow() == Some(device.id);
+    if is_selected {
+        row.add_css_class("device-row-selected");
+    }
+
+    // Track for immediate style update - need listbox to update other rows too
+    let row_clone = row.clone();
+    let listbox_for_update = ctx.listbox.clone();
+
+    {
+        let device_id = device.id;
+        let selected_id = ctx.selected_id.clone();
+        let on_select = ctx.on_select.clone();
+
+        // Use click controller for reliable click handling
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
+
+        click.connect_pressed(move |_, _, _, _| {
+            *selected_id.borrow_mut() = Some(device_id);
+            on_select(Some(device_id));
+
+            // Remove selected state from ALL rows first
+            let mut child = listbox_for_update.first_child();
+            while let Some(child_widget) = child {
+                if let Some(row) = child_widget.downcast_ref::<gtk::ListBoxRow>() {
+                    row.remove_css_class("device-row-selected");
+                }
+                child = child_widget.next_sibling();
+            }
+
+            // Then add selected state to this row
+            row_clone.add_css_class("device-row-selected");
+        });
+
+        row.add_controller(click);
+    }
 
     row
 }
 
 fn build_device_popover(
     device: &Device,
-    store: &DeviceStore,
-    toast_overlay: &adw::ToastOverlay,
-    window: &adw::ApplicationWindow,
-    refresh: &Rc<dyn Fn()>,
+    ctx: &DeviceListContext,
     name_lbl: &Label,
     connected_indicator: &Label,
 ) -> gtk::Popover {
@@ -166,7 +213,13 @@ fn build_device_popover(
         .margin_bottom(4)
         .build();
 
-    let (btn_label, btn_icon, is_connected) = if device.connected {
+    // Get current connection status from store dynamically
+    let current_connected = ctx.store.borrow().iter()
+        .find(|d| d.id == device.id)
+        .map(|d| d.connected)
+        .unwrap_or(false);
+
+    let (btn_label, btn_icon, is_connected) = if current_connected {
         ("Disconnect", "network-offline-symbolic", true)
     } else {
         ("Connect", "network-wired-symbolic", false)
@@ -175,11 +228,13 @@ fn build_device_popover(
     let connect_btn = make_popover_btn(btn_label, btn_icon, false);
     {
         let device_id = device.id;
-        let store = store.clone();
-        let toast_overlay = toast_overlay.clone();
-        let refresh = refresh.clone();
+        let store = ctx.store.clone();
+        let toast_overlay = ctx.toast_overlay.clone();
+        let refresh = ctx.refresh_fn.clone();
         let p = popover.clone();
         let conn_indicator = connected_indicator.clone();
+        let on_select = ctx.on_select.clone();
+        let selected_id = ctx.selected_id.clone();
 
         connect_btn.connect_clicked(move |_| {
             p.popdown();
@@ -191,6 +246,9 @@ fn build_device_popover(
                     .map(|d| (d.name.clone(), format!("{}:{}", d.address, d.port)))
                     .unwrap_or_else(|| ("Unknown".to_string(), String::new()))
             };
+
+            let mut state_changed = false;
+            let mut new_connected = false;
 
             if !address.is_empty() {
                 let do_connect = !is_connected;
@@ -224,6 +282,8 @@ fn build_device_popover(
                         }
                         conn_indicator.set_visible(true);
                         save_devices(&store.borrow());
+                        state_changed = true;
+                        new_connected = true;
 
                         let t = adw::Toast::builder()
                             .title(format!("Connected to {}", device_name))
@@ -265,6 +325,8 @@ fn build_device_popover(
                         }
                         conn_indicator.set_visible(false);
                         save_devices(&store.borrow());
+                        state_changed = true;
+                        new_connected = false;
 
                         let t = adw::Toast::builder()
                             .title(format!("Disconnected from {}", device_name))
@@ -283,6 +345,13 @@ fn build_device_popover(
                 }
             }
 
+            // If this device is the currently selected one, refresh the
+            // content area to reflect the new connection state.
+            if state_changed && *selected_id.borrow() == Some(device_id) {
+                let _ = new_connected; // state captured inside update_content_for_device via on_select
+                on_select(Some(device_id));
+            }
+
             refresh();
         });
     }
@@ -291,15 +360,12 @@ fn build_device_popover(
     let edit_btn = make_popover_btn("Edit Name", "document-edit-symbolic", false);
     {
         let device_id = device.id;
-        let store = store.clone();
-        let toast = toast_overlay.clone();
-        let refresh = refresh.clone();
         let name_lbl = name_lbl.clone();
-        let window = window.clone();
+        let ctx = ctx.clone();
         let p = popover.clone();
         edit_btn.connect_clicked(move |_| {
             p.popdown();
-            show_edit_dialog(device_id, &store, &toast, &window, &refresh, &name_lbl);
+            show_edit_dialog(device_id, &ctx, &name_lbl);
         });
     }
     vbox.append(&edit_btn);
@@ -314,13 +380,11 @@ fn build_device_popover(
     let delete_btn = make_popover_btn("Delete", "user-trash-symbolic", true);
     {
         let device_id = device.id;
-        let store = store.clone();
-        let toast = toast_overlay.clone();
-        let refresh = refresh.clone();
+        let ctx = ctx.clone();
         let p = popover.clone();
         delete_btn.connect_clicked(move |_| {
             p.popdown();
-            delete_device(device_id, &store, &toast, &refresh);
+            delete_device(device_id, &ctx);
         });
     }
     vbox.append(&delete_btn);
@@ -353,13 +417,11 @@ fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
 
 fn show_edit_dialog(
     device_id: u32,
-    store: &DeviceStore,
-    toast_overlay: &adw::ToastOverlay,
-    parent: &adw::ApplicationWindow,
-    refresh: &Rc<dyn Fn()>,
+    ctx: &DeviceListContext,
     name_lbl: &Label,
 ) {
-    let current_name = store
+    let current_name = ctx
+        .store
         .borrow()
         .iter()
         .find(|d| d.id == device_id)
@@ -368,7 +430,7 @@ fn show_edit_dialog(
 
     let dialog = adw::Window::builder()
         .modal(true)
-        .transient_for(parent)
+        .transient_for(&ctx.window)
         .title("Edit Device Name")
         .default_width(340)
         .default_height(180)
@@ -430,11 +492,13 @@ fn show_edit_dialog(
     let do_save: Rc<dyn Fn()> = Rc::new({
         let entry = entry.clone();
         let err_lbl = err_lbl.clone();
-        let store = store.clone();
-        let toast_overlay_ref = toast_overlay.clone();
-        let refresh = refresh.clone();
+        let store = ctx.store.clone();
+        let toast_overlay_ref = ctx.toast_overlay.clone();
+        let refresh = ctx.refresh_fn.clone();
         let dialog = dialog.clone();
         let name_lbl = name_lbl.clone();
+        let on_select = ctx.on_select.clone();
+        let selected_id = ctx.selected_id.clone();
         move || {
             let text = entry.text();
             let trimmed = text.trim();
@@ -450,6 +514,13 @@ fn show_edit_dialog(
             name_lbl.set_label(&new_name);
 
             save_devices(&store.borrow());
+
+            // If this device is currently shown in the content area,
+            // re-render it so the new name appears immediately.
+            if *selected_id.borrow() == Some(device_id) {
+                on_select(Some(device_id));
+            }
+
             refresh();
 
             let toast = adw::Toast::builder()
@@ -486,12 +557,13 @@ fn show_edit_dialog(
 
 fn delete_device(
     device_id: u32,
-    store: &DeviceStore,
-    toast_overlay: &adw::ToastOverlay,
-    refresh: &Rc<dyn Fn()>,
+    ctx: &DeviceListContext,
 ) {
+    eprintln!("[Delete] delete_device called for device_id: {}", device_id);
+
     let device_address = {
-        let devices = store.borrow();
+        let devices = ctx.store.borrow();
+        eprintln!("[Delete] Devices in store before delete: {}", devices.len());
         devices.iter()
             .find(|d| d.id == device_id)
             .map(|d| format!("{}:{}", d.address, d.port))
@@ -502,17 +574,32 @@ fn delete_device(
         let _ = Command::new("adb")
             .args(["disconnect", addr])
             .spawn();
-        eprintln!("[Delete] Disconnect spawned for {}", addr);
     }
 
     let removed: Option<Device> = {
-        let mut v = store.borrow_mut();
-        v.iter().position(|d| d.id == device_id).map(|pos| v.remove(pos))
+        let mut v = ctx.store.borrow_mut();
+        eprintln!("[Delete] Removing device from store, count before: {}", v.len());
+        let pos = v.iter().position(|d| d.id == device_id);
+        eprintln!("[Delete] Position found: {:?}", pos);
+        pos.map(|p| v.remove(p))
     };
 
-    let Some(device) = removed else { return };
+    let Some(device) = removed else {
+        eprintln!("[Delete] Device not found in store");
+        return;
+    };
 
-    refresh();
+    eprintln!("[Delete] Removed device: {}", device.name);
+
+    // If this was the selected device, deselect it and reset content
+    if *ctx.selected_id.borrow() == Some(device_id) {
+        eprintln!("[Delete] Device was selected, deselecting");
+        *ctx.selected_id.borrow_mut() = None;
+        (ctx.on_deselect_fn)();
+    }
+
+    eprintln!("[Delete] Calling refresh()");
+    (ctx.refresh_fn)();
 
     let toast = adw::Toast::builder()
         .title(format!("\"{}\" removed", device.name))
@@ -521,11 +608,11 @@ fn delete_device(
         .build();
     toast.set_priority(adw::ToastPriority::Normal);
 
-    save_devices(&store.borrow());
+    save_devices(&ctx.store.borrow());
 
     toast.connect_button_clicked({
-        let store = store.clone();
-        let refresh = refresh.clone();
+        let store = ctx.store.clone();
+        let refresh = ctx.refresh_fn.clone();
         let device = device.clone();
         move |_| {
             store.borrow_mut().push(device.clone());
@@ -535,5 +622,5 @@ fn delete_device(
         }
     });
 
-    toast_overlay.add_toast(toast);
+    ctx.toast_overlay.add_toast(toast);
 }

@@ -74,6 +74,19 @@ headerbar {
     background-color: alpha(@theme_fg_color, 0.12);
 }
 
+.device-listbox > row.device-row-selected {
+    background-color: alpha(@accent_bg_color, 0.20);
+}
+
+.device-listbox > row.device-row-selected:hover {
+    background-color: alpha(@accent_bg_color, 0.25);
+}
+
+.device-listbox > row.device-row-selected .device-row-label {
+    color: @accent_color;
+    font-weight: 600;
+}
+
 .device-row-icon {
     color: @accent_color;
     opacity: 0.80;
@@ -416,5 +429,26 @@ button.code-cancel-btn {
     border-radius: 8px;
     padding: 8px 18px;
     font-size: 14px;
+}
+
+/* Device selection content states */
+.success-icon {
+    color: #2ec27e;
+    margin-bottom: 8px;
+}
+
+.disconnected-icon {
+    color: @theme_fg_color;
+    opacity: 0.4;
+    margin-bottom: 8px;
+}
+
+button.connect-btn {
+    border-radius: 10px;
+    padding: 10px 28px;
+    font-size: 14px;
+    font-weight: 600;
+    min-height: 20px;
+    margin-top: 8px;
 }
 "#;

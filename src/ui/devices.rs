@@ -44,8 +44,13 @@ pub fn load_devices() -> Vec<Device> {
 /// Saves devices to disk.
 pub fn save_devices(devices: &[Device]) {
     let path = get_storage_path();
+    eprintln!("[Save] Saving {} devices to {:?}", devices.len(), path);
     if let Ok(data) = serde_json::to_string_pretty(devices) {
-        let _ = fs::write(path, data);
+        eprintln!("[Save] JSON: {}", data);
+        match fs::write(path, &data) {
+            Ok(_) => eprintln!("[Save] Successfully saved"),
+            Err(e) => eprintln!("[Save] Failed to save: {}", e),
+        }
     }
 }
 

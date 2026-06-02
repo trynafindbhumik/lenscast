@@ -6,7 +6,7 @@ pub mod modal;
 pub mod sidebar;
 pub mod window;
 
-pub use content::create_content_area;
+pub use content::{create_content_area, update_content_for_device, reset_content_to_welcome};
 pub use header::{create_add_device_button, create_header_bar};
 pub use modal::show_add_device_modal;
 pub use sidebar::create_sidebar;
