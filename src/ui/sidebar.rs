@@ -1,10 +1,11 @@
 use std::cell::RefCell;
 use std::process::Command;
 use adw::prelude::*;
-use gtk::{Label, Orientation};
+use gtk::{ Label, Orientation };
 use std::rc::Rc;
 
-use crate::ui::devices::{save_devices, Device, DeviceStore};
+use crate::video::PipelineStore;
+use crate::ui::devices::{ save_devices, Device, DeviceStore };
 
 /// Shared callback type for refreshing the device list.
 pub(crate) type RefreshFn = Rc<dyn Fn()>;
@@ -19,15 +20,14 @@ pub(crate) struct DeviceListContext {
     pub window: adw::ApplicationWindow,
     pub refresh_fn: RefreshFn,
     pub on_select: Rc<dyn Fn(Option<u32>)>,
+    pub pipelines: PipelineStore,
     pub selected_id: Rc<RefCell<Option<u32>>>,
     pub on_deselect_fn: Rc<dyn Fn()>,
 }
 
 /// Returns (sidebar_box, device_listbox, selected_device_id_cell).
 pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
-    let sidebar = gtk::Box::builder()
-        .orientation(Orientation::Vertical)
-        .build();
+    let sidebar = gtk::Box::builder().orientation(Orientation::Vertical).build();
     sidebar.set_size_request(240, -1);
     sidebar.add_css_class("sidebar");
 
@@ -39,12 +39,14 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
     sidebar_header.set_margin_bottom(8);
     sidebar.append(&sidebar_header);
 
-    let scroll = gtk::ScrolledWindow::builder()
+    let scroll = gtk::ScrolledWindow
+        ::builder()
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
 
-    let device_listbox = gtk::ListBox::builder()
+    let device_listbox = gtk::ListBox
+        ::builder()
         .selection_mode(gtk::SelectionMode::None)
         .show_separators(false)
         .build();
@@ -74,10 +76,7 @@ pub fn rebuild_device_list(ctx: &DeviceListContext) {
 
     if devices.is_empty() {
         eprintln!("[Sidebar] Showing empty state");
-        let empty_row = gtk::ListBoxRow::builder()
-            .activatable(false)
-            .selectable(false)
-            .build();
+        let empty_row = gtk::ListBoxRow::builder().activatable(false).selectable(false).build();
         let lbl = Label::new(Some("No devices added"));
         lbl.add_css_class("dim-label");
         lbl.set_halign(gtk::Align::Start);
@@ -98,7 +97,8 @@ pub fn rebuild_device_list(ctx: &DeviceListContext) {
 }
 
 fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow {
-    let row_box = gtk::Box::builder()
+    let row_box = gtk::Box
+        ::builder()
         .orientation(Orientation::Horizontal)
         .spacing(0)
         .margin_start(8)
@@ -124,11 +124,10 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
     connected_indicator.add_css_class("device-connected-indicator");
     connected_indicator.set_visible(device.connected);
 
-    let spacer = gtk::Box::builder()
-        .hexpand(true)
-        .build();
+    let spacer = gtk::Box::builder().hexpand(true).build();
 
-    let menu_btn = gtk::MenuButton::builder()
+    let menu_btn = gtk::MenuButton
+        ::builder()
         .icon_name("view-more-symbolic")
         .has_frame(false)
         .valign(gtk::Align::Center)
@@ -144,10 +143,7 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
     row_box.append(&connected_indicator);
     row_box.append(&menu_btn);
 
-    let row = gtk::ListBoxRow::builder()
-        .activatable(true)
-        .selectable(false)
-        .build();
+    let row = gtk::ListBoxRow::builder().activatable(true).selectable(false).build();
     row.add_css_class("device-row");
     row.set_child(Some(&row_box));
 
@@ -167,9 +163,7 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
         let on_select = ctx.on_select.clone();
 
         // Use click controller for reliable click handling
-        let click = gtk::GestureClick::builder()
-            .button(gtk::gdk::BUTTON_PRIMARY)
-            .build();
+        let click = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_PRIMARY).build();
 
         click.connect_pressed(move |_, _, _, _| {
             *selected_id.borrow_mut() = Some(device_id);
@@ -198,13 +192,14 @@ fn build_device_popover(
     device: &Device,
     ctx: &DeviceListContext,
     name_lbl: &Label,
-    connected_indicator: &Label,
+    connected_indicator: &Label
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
     popover.add_css_class("device-popover");
 
-    let vbox = gtk::Box::builder()
+    let vbox = gtk::Box
+        ::builder()
         .orientation(Orientation::Vertical)
         .spacing(2)
         .margin_start(4)
@@ -214,7 +209,9 @@ fn build_device_popover(
         .build();
 
     // Get current connection status from store dynamically
-    let current_connected = ctx.store.borrow().iter()
+    let current_connected = ctx.store
+        .borrow()
+        .iter()
         .find(|d| d.id == device.id)
         .map(|d| d.connected)
         .unwrap_or(false);
@@ -229,6 +226,7 @@ fn build_device_popover(
     {
         let device_id = device.id;
         let store = ctx.store.clone();
+        let pipelines = ctx.pipelines.clone();
         let toast_overlay = ctx.toast_overlay.clone();
         let refresh = ctx.refresh_fn.clone();
         let p = popover.clone();
@@ -239,117 +237,35 @@ fn build_device_popover(
         connect_btn.connect_clicked(move |_| {
             p.popdown();
 
-            let (device_name, address) = {
-                let devices = store.borrow();
-                devices.iter()
-                    .find(|d| d.id == device_id)
-                    .map(|d| (d.name.clone(), format!("{}:{}", d.address, d.port)))
-                    .unwrap_or_else(|| ("Unknown".to_string(), String::new()))
+            let (success, device_name) = if is_connected {
+                crate::ui::devices::try_disconnect_device(&store, &pipelines, device_id)
+            } else {
+                crate::ui::devices::try_connect_device(&store, &pipelines, device_id)
             };
 
-            let mut state_changed = false;
-            let mut new_connected = false;
-
-            if !address.is_empty() {
-                let do_connect = !is_connected;
-
-                if do_connect {
-                    eprintln!("[Sidebar] Connecting to: {}", address);
-
-                    let _ = std::process::Command::new("adb")
-                        .args(["connect", &address])
-                        .output();
-
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-
-                    let verify_result = std::process::Command::new("adb")
-                        .args(["devices"])
-                        .output();
-
-                    let is_actually_connected = match verify_result {
-                        Ok(out) => {
-                            let stdout = String::from_utf8_lossy(&out.stdout);
-                            stdout.lines().any(|line| {
-                                line.starts_with(&address) && line.contains("device")
-                            })
-                        }
-                        Err(_) => false,
-                    };
-
-                    if is_actually_connected {
-                        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
-                            d.connected = true;
-                        }
-                        conn_indicator.set_visible(true);
-                        save_devices(&store.borrow());
-                        state_changed = true;
-                        new_connected = true;
-
-                        let t = adw::Toast::builder()
-                            .title(format!("Connected to {}", device_name))
-                            .timeout(3)
-                            .build();
-                        t.set_priority(adw::ToastPriority::Normal);
-                        toast_overlay.add_toast(t);
-                    } else {
-                        let t = adw::Toast::builder()
-                            .title(format!("Failed to connect to {}", device_name))
-                            .timeout(3)
-                            .build();
-                        t.set_priority(adw::ToastPriority::Normal);
-                        toast_overlay.add_toast(t);
-                    }
+            if success {
+                conn_indicator.set_visible(!is_connected);
+                let title = if is_connected {
+                    format!("Disconnected from {}", device_name)
                 } else {
-                    eprintln!("[Sidebar] Disconnecting from: {}", address);
-                    let _ = std::process::Command::new("adb")
-                        .args(["disconnect", &address])
-                        .output();
+                    format!("Connected to {}", device_name)
+                };
+                let t = adw::Toast::builder().title(title).timeout(3).build();
+                t.set_priority(adw::ToastPriority::Normal);
+                toast_overlay.add_toast(t);
 
-                    let verify_result = std::process::Command::new("adb")
-                        .args(["devices"])
-                        .output();
-
-                    let is_still_connected = match verify_result {
-                        Ok(out) => {
-                            let stdout = String::from_utf8_lossy(&out.stdout);
-                            stdout.lines().any(|line| {
-                                line.starts_with(&address) && line.contains("device")
-                            })
-                        }
-                        Err(_) => false,
-                    };
-
-                    if !is_still_connected {
-                        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
-                            d.connected = false;
-                        }
-                        conn_indicator.set_visible(false);
-                        save_devices(&store.borrow());
-                        state_changed = true;
-                        new_connected = false;
-
-                        let t = adw::Toast::builder()
-                            .title(format!("Disconnected from {}", device_name))
-                            .timeout(3)
-                            .build();
-                        t.set_priority(adw::ToastPriority::Normal);
-                        toast_overlay.add_toast(t);
-                    } else {
-                        let t = adw::Toast::builder()
-                            .title(format!("Failed to disconnect from {}", device_name))
-                            .timeout(3)
-                            .build();
-                        t.set_priority(adw::ToastPriority::Normal);
-                        toast_overlay.add_toast(t);
-                    }
+                if *selected_id.borrow() == Some(device_id) {
+                    on_select(Some(device_id));
                 }
-            }
-
-            // If this device is the currently selected one, refresh the
-            // content area to reflect the new connection state.
-            if state_changed && *selected_id.borrow() == Some(device_id) {
-                let _ = new_connected; // state captured inside update_content_for_device via on_select
-                on_select(Some(device_id));
+            } else {
+                let action = if is_connected { "disconnect from" } else { "connect to" };
+                let t = adw::Toast
+                    ::builder()
+                    .title(format!("Failed to {} {}", action, device_name))
+                    .timeout(3)
+                    .build();
+                t.set_priority(adw::ToastPriority::Normal);
+                toast_overlay.add_toast(t);
             }
 
             refresh();
@@ -370,7 +286,8 @@ fn build_device_popover(
     }
     vbox.append(&edit_btn);
 
-    let sep = gtk::Separator::builder()
+    let sep = gtk::Separator
+        ::builder()
         .orientation(Orientation::Horizontal)
         .margin_top(4)
         .margin_bottom(4)
@@ -394,10 +311,7 @@ fn build_device_popover(
 }
 
 fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
-    let row = gtk::Box::builder()
-        .orientation(Orientation::Horizontal)
-        .spacing(10)
-        .build();
+    let row = gtk::Box::builder().orientation(Orientation::Horizontal).spacing(10).build();
 
     let img = gtk::Image::from_icon_name(icon);
     img.set_pixel_size(14);
@@ -415,20 +329,16 @@ fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
     btn
 }
 
-fn show_edit_dialog(
-    device_id: u32,
-    ctx: &DeviceListContext,
-    name_lbl: &Label,
-) {
-    let current_name = ctx
-        .store
+fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
+    let current_name = ctx.store
         .borrow()
         .iter()
         .find(|d| d.id == device_id)
         .map(|d| d.name.clone())
         .unwrap_or_default();
 
-    let dialog = adw::Window::builder()
+    let dialog = adw::Window
+        ::builder()
         .modal(true)
         .transient_for(&ctx.window)
         .title("Edit Device Name")
@@ -440,9 +350,7 @@ fn show_edit_dialog(
 
     let tv = adw::ToolbarView::new();
 
-    let hdr = adw::HeaderBar::builder()
-        .show_end_title_buttons(false)
-        .build();
+    let hdr = adw::HeaderBar::builder().show_end_title_buttons(false).build();
     hdr.add_css_class("flat");
 
     let cancel_btn = gtk::Button::builder().label("Cancel").build();
@@ -453,7 +361,8 @@ fn show_edit_dialog(
     hdr.pack_end(&save_btn);
     tv.add_top_bar(&hdr);
 
-    let body = gtk::Box::builder()
+    let body = gtk::Box
+        ::builder()
         .orientation(Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -463,23 +372,18 @@ fn show_edit_dialog(
         .margin_end(24)
         .build();
 
-    let lbl = Label::builder()
-        .label("Device name")
-        .halign(gtk::Align::Start)
-        .build();
+    let lbl = Label::builder().label("Device name").halign(gtk::Align::Start).build();
     lbl.add_css_class("modal-field-label");
 
-    let entry = gtk::Entry::builder()
+    let entry = gtk::Entry
+        ::builder()
         .text(&current_name)
         .hexpand(true)
         .activates_default(true)
         .build();
     entry.add_css_class("modal-entry");
 
-    let err_lbl = Label::builder()
-        .label("Name cannot be empty.")
-        .halign(gtk::Align::Start)
-        .build();
+    let err_lbl = Label::builder().label("Name cannot be empty.").halign(gtk::Align::Start).build();
     err_lbl.add_css_class("modal-error-label");
     err_lbl.set_visible(false);
 
@@ -508,7 +412,12 @@ fn show_edit_dialog(
                 return;
             }
             let new_name = trimmed.to_string();
-            if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+            if
+                let Some(d) = store
+                    .borrow_mut()
+                    .iter_mut()
+                    .find(|d| d.id == device_id)
+            {
                 d.name = new_name.clone();
             }
             name_lbl.set_label(&new_name);
@@ -523,7 +432,8 @@ fn show_edit_dialog(
 
             refresh();
 
-            let toast = adw::Toast::builder()
+            let toast = adw::Toast
+                ::builder()
                 .title(format!("Device renamed to \"{}\"", new_name))
                 .timeout(3)
                 .build();
@@ -534,8 +444,14 @@ fn show_edit_dialog(
         }
     });
 
-    save_btn.connect_clicked({ let f = do_save.clone(); move |_| f() });
-    entry.connect_activate({ let f = do_save.clone(); move |_| f() });
+    save_btn.connect_clicked({
+        let f = do_save.clone();
+        move |_| f()
+    });
+    entry.connect_activate({
+        let f = do_save.clone();
+        move |_| f()
+    });
     entry.connect_changed({
         let err = err_lbl.clone();
         move |e| {
@@ -563,42 +479,30 @@ fn delete_device(
 
     let device_address = {
         let devices = ctx.store.borrow();
-        eprintln!("[Delete] Devices in store before delete: {}", devices.len());
         devices.iter()
             .find(|d| d.id == device_id)
             .map(|d| format!("{}:{}", d.address, d.port))
     };
 
     if let Some(addr) = &device_address {
-        eprintln!("[Delete] Running: adb disconnect {}", addr);
-        let _ = Command::new("adb")
-            .args(["disconnect", addr])
-            .spawn();
+        let _ = Command::new("adb").args(["disconnect", addr]).spawn();
     }
+
+    crate::ui::devices::despawn_pipeline(&ctx.pipelines, device_id); // NEW
 
     let removed: Option<Device> = {
         let mut v = ctx.store.borrow_mut();
-        eprintln!("[Delete] Removing device from store, count before: {}", v.len());
         let pos = v.iter().position(|d| d.id == device_id);
-        eprintln!("[Delete] Position found: {:?}", pos);
         pos.map(|p| v.remove(p))
     };
 
-    let Some(device) = removed else {
-        eprintln!("[Delete] Device not found in store");
-        return;
-    };
+    let Some(device) = removed else { return };
 
-    eprintln!("[Delete] Removed device: {}", device.name);
-
-    // If this was the selected device, deselect it and reset content
     if *ctx.selected_id.borrow() == Some(device_id) {
-        eprintln!("[Delete] Device was selected, deselecting");
         *ctx.selected_id.borrow_mut() = None;
         (ctx.on_deselect_fn)();
     }
 
-    eprintln!("[Delete] Calling refresh()");
     (ctx.refresh_fn)();
 
     let toast = adw::Toast::builder()

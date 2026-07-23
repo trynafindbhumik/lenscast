@@ -19,6 +19,9 @@ rand = "0.9"
 mdns-sd = "0.13"
 qrcode = "0.14"
 flume = "0.11"
+gstreamer = "0.22"
+gstreamer-app = "0.22"
+gstreamer-video = "0.22"
 
 [target.'cfg(not(any(target_os = "macos", windows)))'.dependencies]
 ksni = "0.3"

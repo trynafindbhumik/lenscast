@@ -1,17 +1,19 @@
 use gtk::prelude::*;
-use gtk::{Label, Orientation, Box as GtkBox, Image, Button};
+use gtk::{ Label, Orientation, Box as GtkBox, Image, Button };
 use std::rc::Rc;
 
 /// Creates the main content area shown when no device is selected.
 pub fn create_content_area() -> (gtk::Box, gtk::Box) {
-    let content_container = gtk::Box::builder()
+    let content_container = gtk::Box
+        ::builder()
         .orientation(Orientation::Vertical)
         .vexpand(true)
         .hexpand(true)
         .build();
 
     // Content area that changes based on selection
-    let content_area = gtk::Box::builder()
+    let content_area = gtk::Box
+        ::builder()
         .orientation(Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -40,6 +42,9 @@ pub fn update_content_for_device(
     device_name: &str,
     is_connected: bool,
     on_connect_clicked: Rc<dyn Fn()>,
+    transform_cb: Option<crate::ui::TransformCallbacks>,
+    on_camera_changed: Option<Rc<dyn Fn(String)>>,
+    current_camera_selection: Option<String>,
 ) {
     // Clear existing children
     while let Some(child) = content_area.first_child() {
@@ -75,7 +80,36 @@ pub fn update_content_for_device(
         vbox.append(&title);
         vbox.append(&subtitle);
 
+        if let Some(cb) = transform_cb {
+            vbox.append(&crate::ui::build_transform_section(cb));
+        }
+
+        let camera_row = gtk::Box::builder()
+            .orientation(Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let camera_label = Label::new(Some("Camera"));
+        camera_label.set_halign(gtk::Align::Start);
+        camera_label.set_hexpand(true);
+        let camera_dropdown = gtk::DropDown::from_strings(&["Back", "Front"]);
+        if let Some(selection) = current_camera_selection {
+            camera_dropdown.set_selected(if selection.to_lowercase() == "front" { 1 } else { 0 });
+        }
+        if let Some(on_camera_changed) = on_camera_changed {
+            camera_dropdown.connect_selected_notify(move |dropdown| {
+                let label = match dropdown.selected() {
+                    1 => "front".to_string(),
+                    _ => "back".to_string(),
+                };
+                on_camera_changed(label.clone());
+            });
+        }
+        camera_row.append(&camera_label);
+        camera_row.append(&camera_dropdown);
+        vbox.append(&camera_row);
+
         content_area.append(&vbox);
+
     } else {
         // Show disconnect image and connect button
         let icon = Image::from_icon_name("network-wireless-symbolic");
