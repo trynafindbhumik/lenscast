@@ -1,7 +1,7 @@
-use std::cell::{Cell, RefCell};
-use std::process::{Child, Command, Stdio};
+use std::cell::{ Cell, RefCell };
+use std::process::{ Child, Command, Stdio };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{ AtomicBool, Ordering };
 use std::fs::OpenOptions;
 use super::types::Rotation;
 
@@ -23,7 +23,7 @@ pub fn scrcpy_command_args(sink_device: &str, camera_id: u32) -> Vec<String> {
         "--video-codec=h264".to_string(),
         format!("--v4l2-sink={sink_device}"),
         "--no-playback".to_string(),
-        "--no-window".to_string(),
+        "--no-window".to_string()
     ]
 }
 
@@ -66,21 +66,21 @@ impl VideoPipeline {
         // CRITICAL FIX: Start a persistent dummy writer thread.
         // This thread opens the V4L2 device and keeps the file descriptor open forever.
         // This ensures that the "writer count" in v4l2loopback never drops to 0,
-        // which prevents the kernel from stopping the stream and Chrome from 
+        // which prevents the kernel from stopping the stream and Chrome from
         // detecting a "device disconnected" event when scrcpy is restarted.
         // Unlike the GStreamer fallback, this dummy writer does NOT negotiate formats,
         // so it will not cause VIDIOC_G_FMT errors when scrcpy tries to start.
         let sink_device_clone = sink_device.clone();
         let flag = Arc::new(AtomicBool::new(true));
         let flag_clone = flag.clone();
-        
+
         std::thread::spawn(move || {
             eprintln!("[V4L2] Starting persistent dummy writer for {}", sink_device_clone);
             loop {
                 if !flag_clone.load(Ordering::Relaxed) {
                     break;
                 }
-                
+
                 match OpenOptions::new().write(true).open(&sink_device_clone) {
                     Ok(_file) => {
                         eprintln!("[V4L2] Persistent dummy writer successfully opened {}", sink_device_clone);
@@ -91,7 +91,11 @@ impl VideoPipeline {
                         break;
                     }
                     Err(e) => {
-                        eprintln!("[V4L2] Dummy writer failed to open {}: {}. Retrying...", sink_device_clone, e);
+                        eprintln!(
+                            "[V4L2] Dummy writer failed to open {}: {}. Retrying...",
+                            sink_device_clone,
+                            e
+                        );
                         std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 }
@@ -129,7 +133,9 @@ impl VideoPipeline {
             .map_err(|e| format!("failed to start scrcpy: {e}"))?;
 
         match child.try_wait() {
-            Ok(Some(status)) => return Err(format!("scrcpy exited immediately with status {status}")),
+            Ok(Some(status)) => {
+                return Err(format!("scrcpy exited immediately with status {status}"));
+            }
             Ok(None) => eprintln!("[Video] scrcpy started with pid {}", child.id()),
             Err(err) => eprintln!("[Video] could not check scrcpy process state: {err}"),
         }
@@ -147,17 +153,17 @@ impl VideoPipeline {
 
     pub fn switch_camera(&self, new_camera_id: u32) {
         eprintln!("[Video] switching camera to id {new_camera_id}");
-        
+
         // 1. Stop scrcpy.
-        // The persistent dummy writer is STILL holding the device open, so the 
+        // The persistent dummy writer is STILL holding the device open, so the
         // kernel writer count never drops to 0. The last frame is seamlessly frozen.
         self.stop_scrcpy();
-        
+
         // 2. Wait for scrcpy to fully release its file descriptor.
         std::thread::sleep(std::time::Duration::from_millis(300));
-        
+
         self.camera_id.set(new_camera_id);
-        
+
         // 3. Start scrcpy with the new camera. It seamlessly takes over the frozen stream.
         if let Err(e) = self.start_scrcpy() {
             eprintln!("[Video] failed to restart scrcpy for camera switch: {e}");
