@@ -129,7 +129,71 @@ impl PairService {
         })
     }
 
-    /// Pairs with device and establishes connection.
+    /// Discovers already-paired device via mDNS connect service (no pairing).
+    pub fn discover_device_for_connect() -> Result<DeviceInfo, Box<dyn std::error::Error>> {
+        let mdns = ServiceDaemon::new()?;
+        let receiver = mdns.browse(SERVICE_TYPE_CONNECT)?;
+        let start_time = std::time::Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        loop {
+            if start_time.elapsed() > timeout {
+                return Err("No connect service discovered (timeout)".into());
+            }
+
+            match receiver.recv_timeout(Duration::from_millis(500)) {
+                Ok(ServiceEvent::ServiceResolved(info)) => {
+                    let addresses = info.get_addresses_v4();
+                    let port = info.get_port();
+
+                    if let Some(addr) = addresses.iter().find(|addr| addr.is_private()) {
+                        eprintln!("[mDNS] Discovered connect service: {}:{}", addr, port);
+                        return Ok(DeviceInfo {
+                            address: **addr,
+                            pairing_port: 0,
+                            debugging_port: port,
+                        });
+                    }
+                }
+                Ok(_) => {}
+                Err(flume::RecvTimeoutError::Timeout) => continue,
+                Err(flume::RecvTimeoutError::Disconnected) => {
+                    // Channel closed — browse service unregistered. Keep waiting.
+                    std::thread::sleep(Duration::from_millis(500));
+                    // Retry browse with fresh receiver
+                    let receiver = mdns.browse(SERVICE_TYPE_CONNECT)?;
+                    let _ = receiver.recv_timeout(Duration::from_millis(100));
+                }
+                Err(err) => return Err(format!("mDNS error: {}", err).into()),
+            }
+        }
+    }
+
+    /// Pairs with device (QR flow — no connect).
+    pub fn execute_pair_only(
+        device: &DeviceInfo,
+        password: &str,
+    ) -> Result<DeviceInfo, String> {
+        let pair_output = Command::new("adb")
+            .args([
+                "pair",
+                &format!("{}:{}", device.address, device.pairing_port),
+                password,
+            ])
+            .output()
+            .map_err(|e| format!("adb pair failed: {}", e))?;
+
+        if !pair_output.status.success() {
+            return Err(format!(
+                "adb pair failed: {}",
+                String::from_utf8_lossy(&pair_output.stderr).trim()
+            ));
+        }
+
+        Ok(device.clone())
+    }
+
+    /// Pairs with device and establishes connection (IP/manual flow).
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,

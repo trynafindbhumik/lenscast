@@ -56,7 +56,7 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
             Ok(device) => {
                 eprintln!("[QR] Device discovered: {}:{}:{}", device.address, device.pairing_port, device.debugging_port);
                 match
-                    crate::adb::pair_service::PairService::execute_pair_and_connect(
+                    crate::adb::pair_service::PairService::execute_pair_only(
                         &device,
                         &password
                     )

@@ -186,19 +186,20 @@ pub fn try_connect_device(
     pipelines: &PipelineStore,
     device_id: u32
 ) -> (bool, String) {
-    let (device_name, address) = {
+    let (device_name, stored_address, stored_port) = {
         let devices = store.borrow();
         match devices.iter().find(|d| d.id == device_id) {
-            Some(d) => (d.name.clone(), format!("{}:{}", d.address, d.port)),
+            Some(d) => (d.name.clone(), d.address.clone(), d.port),
             None => return (false, String::new()),
         }
     };
 
-    if address.is_empty() {
+    let address = format!("{}:{}", stored_address, stored_port);
+    if address.is_empty() || stored_port == 0 {
         return (false, device_name);
     }
 
-    eprintln!("[Connect] trying to connect device {device_id} at {address}");
+    eprintln!("[Connect] trying device {device_id} at {address}");
     let _ = Command::new("adb").args(["connect", &address]).output();
     std::thread::sleep(std::time::Duration::from_millis(500));
 
@@ -211,12 +212,56 @@ pub fn try_connect_device(
         Err(_) => false,
     };
 
+    // If not connected via stored address, try mDNS discovery
+    if !is_connected {
+        eprintln!("[Connect] stored address failed, trying mDNS discovery for '{}'", device_name);
+        match crate::adb::pair_service::PairService::discover_device_for_connect() {
+            Ok(discovery) => {
+                let discovered_addr = format!("{}:{}", discovery.address, discovery.debugging_port);
+                eprintln!("[Connect] mDNS found {}:{}, attempting connect", discovery.address, discovery.debugging_port);
+                let _ = Command::new("adb").args(["connect", &discovered_addr]).output();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+
+                let verify2 = Command::new("adb").args(["devices"]).output();
+                let is_connected_after_discovery: bool = match verify2 {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        stdout.lines().any(|line| line.starts_with(&discovered_addr) && line.contains("device"))
+                    }
+                    Err(_) => false,
+                };
+
+                if is_connected_after_discovery {
+                    eprintln!("[Connect] mDNS-assisted connect success");
+                    // Update stored address/port
+                    if let Some(dev) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+                        dev.address = discovery.address.to_string();
+                        dev.port = discovery.debugging_port;
+                    }
+                    save_devices(&store.borrow());
+
+                    let camera_id = {
+                        let devices = store.borrow();
+                        devices.iter().find(|d| d.id == device_id)
+                            .map(|d| camera_id_for_selection(&d.camera_selection))
+                            .unwrap_or(0)
+                    };
+                    spawn_pipeline(pipelines, device_id, camera_id);
+                    return (true, device_name);
+                }
+            }
+            Err(e) => {
+                eprintln!("[Connect] mDNS discovery failed: {}", e);
+            }
+        }
+    }
+
     if is_connected {
         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
             d.connected = true;
         }
         save_devices(&store.borrow());
-        
+
         let camera_id = {
             let devices = store.borrow();
             devices.iter().find(|d| d.id == device_id)
