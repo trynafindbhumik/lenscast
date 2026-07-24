@@ -235,47 +235,105 @@ pub fn try_connect_device(
     pipelines: &PipelineStore,
     device_id: u32,
 ) -> (bool, String) {
-    let (device_name, address) = {
+    let (device_name, address, port) = {
         let devices = store.borrow();
         match devices.iter().find(|d| d.id == device_id) {
-            Some(d) => (d.name.clone(), format!("{}:{}", d.address, d.port)),
+            Some(d) => (d.name.clone(), d.address.clone(), d.port),
             None => return (false, String::new()),
         }
     };
 
-    log::info!("[devices] try_connect: id={} addr={}", device_id, address);
+    let address_str = format!("{}:{}", address, port);
+    log::info!(
+        "[devices] try_connect: id={} addr={}",
+        device_id,
+        address_str
+    );
 
     if address.is_empty() {
         log::warn!("[devices] empty address for device_id={}", device_id);
         return (false, device_name);
     }
 
-    log::info!("[devices] running: adb connect {}", address);
-    let connect_out = Command::new("adb").args(["connect", &address]).output();
+    // Try connect with saved port first
+    log::info!("[devices] running: adb connect {}", address_str);
+    let connect_out = Command::new("adb")
+        .args(["connect", &address_str])
+        .output();
     log::info!(
         "[devices] adb connect output: {:?}",
         connect_out
             .as_ref()
             .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
     );
-    std::thread::sleep(std::time::Duration::from_millis(500));
 
+    // Check if saved port worked
     let verify = Command::new("adb").args(["devices"]).output();
-    let is_connected = match verify {
+    let mut is_connected = match verify {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             log::info!("[devices] adb devices output:\n{}", stdout);
-            let found = stdout
+            stdout
                 .lines()
-                .any(|line| line.starts_with(&address) && line.contains("device"));
-            log::info!("[devices] is_connected={} for {}", found, address);
-            found
+                .any(|line| line.starts_with(&address_str) && line.contains("device"))
         }
         Err(e) => {
             log::error!("[devices] adb devices failed: {}", e);
             false
         }
     };
+
+    // If saved port failed, try mDNS discovery to find the actual debug port
+    if !is_connected {
+        log::info!(
+            "[devices] saved port {} failed, trying mDNS discovery",
+            address_str
+        );
+        if let Ok(discovered) =
+            crate::adb::pair_service::PairService::discover_device_for_connect()
+        {
+            let discovered_addr = format!("{}:{}", discovered.address, discovered.debugging_port);
+            log::info!(
+                "[devices] mDNS discovered {} - trying adb connect",
+                discovered_addr
+            );
+
+            let discovered_out = Command::new("adb")
+                .args(["connect", &discovered_addr])
+                .output();
+            log::info!(
+                "[devices] adb connect {} output: {:?}",
+                discovered_addr,
+                discovered_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            );
+
+            // Verify the new connection
+            if let Ok(out) = Command::new("adb").args(["devices"]).output() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                is_connected = stdout.lines().any(
+                    |line| line.starts_with(&discovered_addr) && line.contains("device"),
+                );
+            }
+
+            // Update stored port if mDNS gave us a different one
+            if is_connected {
+                log::info!(
+                    "[devices] mDNS connect succeeded, updating stored port {} -> {}",
+                    port,
+                    discovered.debugging_port
+                );
+                if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+                    d.address = discovered.address.to_string();
+                    d.port = discovered.debugging_port;
+                }
+                save_devices(&store.borrow());
+            }
+        } else {
+            log::warn!("[devices] mDNS discovery found no device");
+        }
+    }
 
     if is_connected {
         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
