@@ -1,5 +1,5 @@
 use adw::prelude::*;
-use qrcode::{QrCode, Color};
+use qrcode::{Color, QrCode};
 use std::rc::Rc;
 use std::thread;
 
@@ -31,9 +31,10 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     let service = match crate::adb::pair_service::PairService::new() {
         Ok(s) => s,
         Err(e) => {
-            let _ = event_tx.try_send(
-                PairEvent::PairFailed(format!("Failed to initialize pairing service: {}", e))
-            );
+            let _ = event_tx.try_send(PairEvent::PairFailed(format!(
+                "Failed to initialize pairing service: {}",
+                e
+            )));
             return;
         }
     };
@@ -42,42 +43,35 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
     let _ = event_tx.try_send(PairEvent::DecodedString(qr_payload.clone()));
 
     if let Err(e) = service.start_discovery() {
-        let _ = event_tx.try_send(
-            PairEvent::PairFailed(format!("mDNS registration failed: {}", e))
-        );
+        let _ = event_tx.try_send(PairEvent::PairFailed(format!(
+            "mDNS registration failed: {}",
+            e
+        )));
         return;
     }
 
     let tx = event_tx.clone();
     let password = service.password.clone();
 
-    std::thread::spawn(move || {
-        match service.wait_for_pairing() {
-            Ok(device) => {
-                eprintln!("[QR] Device discovered: {}:{}:{}", device.address, device.pairing_port, device.debugging_port);
-                match
-                    crate::adb::pair_service::PairService::execute_pair_only(
-                        &device,
-                        &password
-                    )
-                {
-                    Ok(info) => {
-                        eprintln!("[QR] Pair & connect success: {}:{}", info.address, info.debugging_port);
-                        let _ = tx.try_send(PairEvent::PairSuccess(
-                            info.address.to_string(),
-                            info.debugging_port
-                        ));
-                    }
-                    Err(e) => {
-                        let _ = tx.try_send(PairEvent::PairFailed(e));
-                    }
+    std::thread::spawn(move || match service.wait_for_pairing() {
+        Ok(device) => {
+            match crate::adb::pair_service::PairService::execute_pair_only(&device, &password) {
+                Ok(info) => {
+                    let _ = tx.try_send(PairEvent::PairSuccess(
+                        info.address.to_string(),
+                        info.debugging_port,
+                    ));
+                }
+                Err(e) => {
+                    let _ = tx.try_send(PairEvent::PairFailed(e));
                 }
             }
-            Err(e) => {
-                let _ = event_tx.try_send(
-                    PairEvent::PairFailed(format!("Device discovery failed: {}", e))
-                );
-            }
+        }
+        Err(e) => {
+            let _ = event_tx.try_send(PairEvent::PairFailed(format!(
+                "Device discovery failed: {}",
+                e
+            )));
         }
     });
 }
@@ -90,16 +84,13 @@ fn run_adb_pair_manual(
     event_tx: async_channel::Sender<PairEvent>,
 ) {
     let addr = format!("{}:{}", ip.trim(), port.trim());
-    eprintln!("[Manual] Starting pairing with: {}", addr);
 
-    let mut child = match
-        std::process::Command
-            ::new("adb")
-            .args(["pair", &addr, &code])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+    let mut child = match std::process::Command::new("adb")
+        .args(["pair", &addr, &code])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
         Ok(c) => c,
         Err(e) => {
@@ -132,21 +123,25 @@ fn run_adb_pair_manual(
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
                             let lower = trimmed.to_lowercase();
-                            eprintln!("[Manual][stdout] {}", trimmed);
-                            if !found_success &&
-                               (lower.contains("successfully paired") ||
-                                lower.contains("pairing successful") ||
-                                lower.contains("pairing established") ||
-                                (lower.contains("paired") && lower.contains("success"))) {
+                            if !found_success
+                                && (lower.contains("successfully paired")
+                                    || lower.contains("pairing successful")
+                                    || lower.contains("pairing established")
+                                    || (lower.contains("paired") && lower.contains("success")))
+                            {
                                 found_success = true;
                                 let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
                                     ip_clone.clone(),
-                                    port_clone.parse().unwrap_or(5555)
+                                    port_clone.parse().unwrap_or(5555),
                                 ));
                             }
-                            if lower.contains("error:") || lower.contains("failed") ||
-                               lower.contains("refused") || lower.contains("connection refused") {
-                                let _ = event_tx_reader.try_send(PairEvent::PairFailed(trimmed.to_string()));
+                            if lower.contains("error:")
+                                || lower.contains("failed")
+                                || lower.contains("refused")
+                                || lower.contains("connection refused")
+                            {
+                                let _ = event_tx_reader
+                                    .try_send(PairEvent::PairFailed(trimmed.to_string()));
                                 return;
                             }
                         }
@@ -164,21 +159,25 @@ fn run_adb_pair_manual(
                         let trimmed = line.trim();
                         if !trimmed.is_empty() {
                             let lower = trimmed.to_lowercase();
-                            eprintln!("[Manual][stderr] {}", trimmed);
-                            if !found_success &&
-                               (lower.contains("successfully paired") ||
-                                lower.contains("pairing successful") ||
-                                lower.contains("pairing established") ||
-                                (lower.contains("paired") && lower.contains("success"))) {
+                            if !found_success
+                                && (lower.contains("successfully paired")
+                                    || lower.contains("pairing successful")
+                                    || lower.contains("pairing established")
+                                    || (lower.contains("paired") && lower.contains("success")))
+                            {
                                 found_success = true;
                                 let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
                                     ip_clone.clone(),
-                                    port_clone.parse().unwrap_or(5555)
+                                    port_clone.parse().unwrap_or(5555),
                                 ));
                             }
-                            if lower.contains("error:") || lower.contains("failed") ||
-                               lower.contains("refused") || lower.contains("connection refused") {
-                                let _ = event_tx_reader.try_send(PairEvent::PairFailed(trimmed.to_string()));
+                            if lower.contains("error:")
+                                || lower.contains("failed")
+                                || lower.contains("refused")
+                                || lower.contains("connection refused")
+                            {
+                                let _ = event_tx_reader
+                                    .try_send(PairEvent::PairFailed(trimmed.to_string()));
                                 return;
                             }
                         }
@@ -189,9 +188,9 @@ fn run_adb_pair_manual(
 
             if !active {
                 if !found_success {
-                    let _ = event_tx_reader.try_send(
-                        PairEvent::PairFailed("Pairing process ended unexpectedly".to_string())
-                    );
+                    let _ = event_tx_reader.try_send(PairEvent::PairFailed(
+                        "Pairing process ended unexpectedly".to_string(),
+                    ));
                 }
                 break;
             }
@@ -217,7 +216,11 @@ struct PairingConfig {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max { format!("{}…", &s[..max]) } else { s.to_string() }
+    if s.len() > max {
+        format!("{}…", &s[..max])
+    } else {
+        s.to_string()
+    }
 }
 
 fn start_pairing(config: PairingConfig) {
@@ -292,7 +295,7 @@ fn start_pairing(config: PairingConfig) {
                             actual_size as i32,
                             gdk::MemoryFormat::R8g8b8a8,
                             &bytes,
-                            stride
+                            stride,
                         );
 
                         qr_image_c.set_paintable(Some(&texture));
@@ -301,7 +304,6 @@ fn start_pairing(config: PairingConfig) {
                 }
 
                 PairEvent::PairSuccess(address, port) => {
-                    eprintln!("[UI] Received PairSuccess event: {}:{}", address, port);
                     modal_c.close();
                     on_success(address, port);
                     break;
@@ -313,8 +315,7 @@ fn start_pairing(config: PairingConfig) {
                     stack_c.set_visible_child_name("connect");
                     break;
                 }
-
-                }
+            }
         }
     });
 }
@@ -323,10 +324,9 @@ fn start_pairing(config: PairingConfig) {
 pub fn show_connect_modal(
     parent: &adw::ApplicationWindow,
     device_name: String,
-    on_success: Box<dyn Fn(String, u16)>
+    on_success: Box<dyn Fn(String, u16)>,
 ) {
-    let modal = adw::Window
-        ::builder()
+    let modal = adw::Window::builder()
         .modal(true)
         .transient_for(parent)
         .title("Add Device")
@@ -337,8 +337,7 @@ pub fn show_connect_modal(
         .build();
 
     let toast_overlay = adw::ToastOverlay::new();
-    let stack = gtk::Stack
-        ::builder()
+    let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
         .transition_duration(220)
         .build();
@@ -350,14 +349,14 @@ pub fn show_connect_modal(
         &device_name,
         stack.clone(),
         modal.clone(),
-        on_success.clone()
+        on_success.clone(),
     );
     stack.add_named(&connect_page, Some("connect"));
 
     let (pairing_page, pair_spinner) = build_status_page(
         "Pairing Device…",
         &format!("Running pairing for \"{}\" ", device_name),
-        "Keep your phone unlocked with Wireless debugging enabled"
+        "Keep your phone unlocked with Wireless debugging enabled",
     );
     stack.add_named(&pairing_page, Some("pairing"));
 
@@ -365,15 +364,15 @@ pub fn show_connect_modal(
 
     stack.connect_visible_child_notify({
         let sp = pair_spinner.clone();
-        move |s| {
-            match s.visible_child_name().as_deref() {
-                Some("pairing") => sp.start(),
-                _ => sp.stop(),
-            }
+        move |s| match s.visible_child_name().as_deref() {
+            Some("pairing") => sp.start(),
+            _ => sp.stop(),
         }
     });
 
-    let hdr = adw::HeaderBar::builder().show_end_title_buttons(true).build();
+    let hdr = adw::HeaderBar::builder()
+        .show_end_title_buttons(true)
+        .build();
     hdr.add_css_class("flat");
 
     let tv = adw::ToolbarView::new();
@@ -401,26 +400,23 @@ fn build_connect_page(
     device_name: &str,
     stack: gtk::Stack,
     modal: adw::Window,
-    on_success: Rc<dyn Fn(String, u16)>
+    on_success: Rc<dyn Fn(String, u16)>,
 ) -> (gtk::Box, gtk::Label, gtk::Image, gtk::Spinner, gtk::Label) {
-    let root = gtk::Box
-        ::builder()
+    let root = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .margin_start(32)
         .margin_end(32)
         .margin_top(20)
         .margin_bottom(28)
         .build();
-    let title = gtk::Label
-        ::builder()
+    let title = gtk::Label::builder()
         .label("Connect Your Android Device")
         .halign(gtk::Align::Center)
         .margin_bottom(6)
         .build();
     title.add_css_class("step2-title");
 
-    let subtitle = gtk::Label
-        ::builder()
+    let subtitle = gtk::Label::builder()
         .label("Pair your phone wirelessly via QR code or IP address")
         .halign(gtk::Align::Center)
         .margin_bottom(20)
@@ -430,8 +426,7 @@ fn build_connect_page(
     root.append(&title);
     root.append(&subtitle);
 
-    let panels = gtk::Box
-        ::builder()
+    let panels = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .vexpand(true)
         .build();
@@ -446,8 +441,7 @@ fn build_connect_page(
     panels.append(&right);
     root.append(&panels);
 
-    let error_lbl = gtk::Label
-        ::builder()
+    let error_lbl = gtk::Label::builder()
         .label(" ")
         .halign(gtk::Align::Start)
         .xalign(0.0)
@@ -458,7 +452,10 @@ fn build_connect_page(
     error_lbl.set_visible(false);
     root.append(&error_lbl);
 
-    let pair_btn = gtk::Button::builder().label("Pair via IP/Port").margin_top(4).build();
+    let pair_btn = gtk::Button::builder()
+        .label("Pair via IP/Port")
+        .margin_top(4)
+        .build();
     pair_btn.add_css_class("suggested-action");
     pair_btn.add_css_class("step2-connect-btn");
     root.append(&pair_btn);
@@ -496,7 +493,10 @@ fn build_connect_page(
                 port_e.grab_focus();
                 return;
             }
-            if code.trim().is_empty() || code.trim().len() != 6 || !code.trim().chars().all(|c| c.is_ascii_digit()) {
+            if code.trim().is_empty()
+                || code.trim().len() != 6
+                || !code.trim().chars().all(|c| c.is_ascii_digit())
+            {
                 err.set_label("Please enter the 6-digit pairing code.");
                 err.set_visible(true);
                 code_e.add_css_class("error");
@@ -529,15 +529,13 @@ fn build_connect_page(
 
 /// Builds the manual connection panel.
 fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
-    let panel = gtk::Box
-        ::builder()
+    let panel = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(0)
         .hexpand(true)
         .margin_end(24)
         .build();
-    let heading = gtk::Label
-        ::builder()
+    let heading = gtk::Label::builder()
         .label("Manual Connection")
         .halign(gtk::Align::Start)
         .margin_bottom(14)
@@ -545,8 +543,7 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     heading.add_css_class("step2-panel-heading");
     panel.append(&heading);
 
-    let ip_lbl = gtk::Label
-        ::builder()
+    let ip_lbl = gtk::Label::builder()
         .label("Device IP")
         .halign(gtk::Align::Start)
         .margin_bottom(4)
@@ -554,12 +551,14 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     ip_lbl.add_css_class("step2-field-label");
     panel.append(&ip_lbl);
 
-    let ip_e = gtk::Entry::builder().placeholder_text("192.168.1.x").hexpand(true).build();
+    let ip_e = gtk::Entry::builder()
+        .placeholder_text("192.168.1.x")
+        .hexpand(true)
+        .build();
     ip_e.add_css_class("step2-field-entry");
     panel.append(&ip_e);
 
-    let port_lbl = gtk::Label
-        ::builder()
+    let port_lbl = gtk::Label::builder()
         .label("Pairing Port")
         .halign(gtk::Align::Start)
         .margin_top(10)
@@ -568,12 +567,14 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     port_lbl.add_css_class("step2-field-label");
     panel.append(&port_lbl);
 
-    let port_e = gtk::Entry::builder().placeholder_text("37845").hexpand(true).build();
+    let port_e = gtk::Entry::builder()
+        .placeholder_text("37845")
+        .hexpand(true)
+        .build();
     port_e.add_css_class("step2-field-entry");
     panel.append(&port_e);
 
-    let code_lbl = gtk::Label
-        ::builder()
+    let code_lbl = gtk::Label::builder()
         .label("Pairing Code")
         .halign(gtk::Align::Start)
         .margin_top(10)
@@ -582,14 +583,16 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
     code_lbl.add_css_class("step2-field-label");
     panel.append(&code_lbl);
 
-    let code_e = gtk::Entry::builder().placeholder_text("000000").hexpand(true).build();
+    let code_e = gtk::Entry::builder()
+        .placeholder_text("000000")
+        .hexpand(true)
+        .build();
     code_e.add_css_class("step2-field-entry");
     code_e.set_input_purpose(gtk::InputPurpose::Digits);
     code_e.set_max_length(6);
     panel.append(&code_e);
 
-    let hint = gtk::Label
-        ::builder()
+    let hint = gtk::Label::builder()
         .label("Use the pairing port and code shown under\nWireless Debugging on your phone.")
         .halign(gtk::Align::Start)
         .wrap(true)
@@ -616,24 +619,21 @@ fn build_manual_panel() -> (gtk::Box, gtk::Entry, gtk::Entry, gtk::Entry) {
 
 /// Builds the QR code display panel.
 fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
-    let panel = gtk::Box
-        ::builder()
+    let panel = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .hexpand(true)
         .margin_start(24)
         .spacing(12)
         .build();
 
-    let heading = gtk::Label
-        ::builder()
+    let heading = gtk::Label::builder()
         .label("Scan QR with Phone")
         .halign(gtk::Align::Start)
         .build();
     heading.add_css_class("step2-panel-heading");
     panel.append(&heading);
 
-    let qr_container = gtk::Box
-        ::builder()
+    let qr_container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -649,17 +649,16 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
             background-color: white;
             padding: 16px;
             border-radius: 8px;
-        }"
+        }",
         );
 
         gtk::style_context_add_provider_for_display(
             &display,
             &provider,
-            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     });
-    let qr_image = gtk::Image
-        ::builder()
+    let qr_image = gtk::Image::builder()
         .pixel_size(200)
         .visible(false)
         .halign(gtk::Align::Center)
@@ -670,8 +669,7 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
 
     panel.append(&qr_container);
 
-    let spinner = gtk::Spinner
-        ::builder()
+    let spinner = gtk::Spinner::builder()
         .width_request(32)
         .height_request(32)
         .halign(gtk::Align::Center)
@@ -679,16 +677,14 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
         .build();
     panel.append(&spinner);
 
-    let loading_lbl = gtk::Label
-        ::builder()
+    let loading_lbl = gtk::Label::builder()
         .label("Generating pairing credentials...")
         .halign(gtk::Align::Center)
         .css_classes(["dim-label"])
         .build();
     panel.append(&loading_lbl);
 
-    let hint = gtk::Label
-        ::builder()
+    let hint = gtk::Label::builder()
         .label("Scan this QR code with your phone's\nWireless Debugging QR scanner.")
         .halign(gtk::Align::Start)
         .wrap(true)
@@ -703,10 +699,9 @@ fn build_qr_panel() -> (gtk::Box, gtk::Image, gtk::Spinner, gtk::Label) {
 fn build_status_page(
     title_text: &str,
     subtitle_text: &str,
-    hint_text: &str
+    hint_text: &str,
 ) -> (gtk::Box, gtk::Spinner) {
-    let page = gtk::Box
-        ::builder()
+    let page = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -718,12 +713,14 @@ fn build_status_page(
     spinner.add_css_class("step2-spinner");
     page.append(&spinner);
 
-    let title = gtk::Label::builder().label(title_text).margin_top(4).build();
+    let title = gtk::Label::builder()
+        .label(title_text)
+        .margin_top(4)
+        .build();
     title.add_css_class("connecting-title");
     page.append(&title);
 
-    let subtitle = gtk::Label
-        ::builder()
+    let subtitle = gtk::Label::builder()
         .label(subtitle_text)
         .halign(gtk::Align::Center)
         .justify(gtk::Justification::Center)
@@ -733,8 +730,7 @@ fn build_status_page(
     subtitle.add_css_class("connecting-device-label");
     page.append(&subtitle);
 
-    let hint = gtk::Label
-        ::builder()
+    let hint = gtk::Label::builder()
         .label(hint_text)
         .halign(gtk::Align::Center)
         .justify(gtk::Justification::Center)

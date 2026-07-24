@@ -71,12 +71,9 @@ pub fn start_tray_message_handler(
                     }
                 }
                 TrayMessage::QuitAndDisconnect => {
-                    eprintln!("[Tray] Quit with disconnect requested");
-
                     let devices = device_store.borrow();
                     for device in devices.iter() {
                         let addr = format!("{}:{}", device.address, device.port);
-                        eprintln!("[Tray] Disconnecting: adb disconnect {}", addr);
                         let _ = std::process::Command::new("adb")
                             .args(["disconnect", &addr])
                             .spawn();

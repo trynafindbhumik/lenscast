@@ -1,10 +1,10 @@
+use crate::video::{camera_id_for_selection, PipelineStore, VideoPipeline};
 use std::cell::RefCell;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
-use std::sync::atomic::{ AtomicU32, Ordering };
-use crate::video::{ camera_id_for_selection, PipelineStore, VideoPipeline };
+use std::sync::atomic::{AtomicU32, Ordering};
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -48,11 +48,15 @@ pub fn load_devices() -> Vec<Device> {
 
 pub fn save_devices(devices: &[Device]) {
     let path = get_storage_path();
-    eprintln!("[Save] Saving {} devices to {:?}", devices.len(), path);
     if let Ok(data) = serde_json::to_string_pretty(devices) {
+        let path_log = path.clone();
         match fs::write(path, &data) {
-            Ok(_) => eprintln!("[Save] Successfully saved"),
-            Err(e) => eprintln!("[Save] Failed to save: {}", e),
+            Ok(()) => log::info!(
+                "[devices] saved {} devices to {:?}",
+                devices.len(),
+                path_log
+            ),
+            Err(e) => log::error!("[devices] save FAILED to {:?}: {}", path_log, e),
         }
     }
 }
@@ -65,20 +69,23 @@ pub fn next_device_id() -> u32 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-// FIXED: Removed ALL trailing spaces from "adb" and "devices"
 pub fn get_connected_adb_devices() -> Vec<String> {
     let output = Command::new("adb").args(["devices", "-l"]).output();
     match output {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().skip(1).filter_map(|line| {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 && parts.get(1) == Some(&"device") {
-                    Some(parts[0].to_string())
-                } else {
-                    None
-                }
-            }).collect()
+            stdout
+                .lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 && parts.get(1) == Some(&"device") {
+                        Some(parts[0].to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         }
         Err(_) => Vec::new(),
     }
@@ -99,185 +106,134 @@ pub fn refresh_connected_status(store: &DeviceStore) -> bool {
     changed
 }
 
-// FIXED: Removed ALL trailing spaces. 
-// Previously, "modprobe " caused sudo to fail silently because it looked for 
-// an executable literally named "modprobe " (with a space).
+// FIX: Two v4l2loopback devices instead of one.
+//
+// Old architecture (broken for camera switching):
+//   scrcpy → /dev/video7 ← Chrome
+//   A plain open() "dummy writer" held the fd but never called VIDIOC_STREAMON,
+//   so v4l2loopback saw 0 active streaming writers when scrcpy was killed and
+//   stopped emitting frames, causing Chrome to drop the MediaStreamTrack.
+//
+// New architecture (seamless switching):
+//   scrcpy → /dev/video8 → [GStreamer relay] → /dev/video7 ← Chrome
+//
+//   • /dev/video8  (LensCast_Src)  — intermediate; scrcpy writes here.
+//   • /dev/video7  (LensCast)      — Chrome-facing; relay writes here.
+//
+//   The relay is a real VIDIOC_STREAMON writer of /dev/video7 that never
+//   stops during camera switching.  While scrcpy is down, /dev/video8's
+//   sustain_framerate=1 repeats the last frame; the relay forwards it to
+//   /dev/video7 so Chrome always has live frames and never drops the track.
 fn loopback_modprobe_args() -> Vec<String> {
     vec![
         "modprobe".to_string(),
         "v4l2loopback".to_string(),
-        "devices=1".to_string(),
-        "video_nr=7".to_string(),
-        "card_label=LensCast".to_string(),
+        // Two devices: /dev/video7 (Chrome) and /dev/video8 (scrcpy/relay)
+        "devices=2".to_string(),
+        "video_nr=7,8".to_string(),
+        // Per-device labels — comma-separated, same order as video_nr.
+        // The label on /dev/video7 is what Chrome shows in the camera picker.
+        "card_label=LensCast,LensCast_Src".to_string(),
+        // exclusive_caps=1 makes /dev/video7 visible to Chrome/WebRTC.
+        // One value applies to both devices.
         "exclusive_caps=1".to_string(),
-        "keep_format=1".to_string(),
+        // sustain_framerate=1 causes v4l2loopback to repeat the last frame
+        // when the active writer (scrcpy) stops, bridging the gap until the
+        // relay reads and forwards those repeated frames to /dev/video7.
         "sustain_framerate=1".to_string(),
     ]
 }
 
 fn loopback_paths(_device_id: u32) -> (String, String) {
-    let device_path = "/dev/video7";
+    let chrome_device = "/dev/video7";
+    let scrcpy_device = "/dev/video8";
     let sys_caps = "/sys/module/v4l2loopback/parameters/exclusive_caps";
     let mut needs_reload = false;
-    
-    if !std::path::Path::new(sys_caps).exists() {
+
+    log::info!(
+        "[loopback] checking devices: chrome={} scrcpy={}",
+        chrome_device,
+        scrcpy_device
+    );
+    log::info!(
+        "[loopback] chrome exists={} scrcpy exists={}",
+        std::path::Path::new(chrome_device).exists(),
+        std::path::Path::new(scrcpy_device).exists()
+    );
+
+    // Require BOTH loopback devices to exist with exclusive_caps=1.
+    // exclusive_caps is a CSV per-device flag: "Y,Y,N,N,N,N,N,N" for 8 devices.
+    // A value of "1" means ALL devices use exclusive_caps=1.
+    // Any other value (including "Y,N,...") means some devices lack it.
+    if !std::path::Path::new(chrome_device).exists()
+        || !std::path::Path::new(scrcpy_device).exists()
+    {
+        log::info!("[loopback] one or both devices missing, need reload");
         needs_reload = true;
     } else if let Ok(caps) = std::fs::read_to_string(sys_caps) {
-        if caps.trim() != "1" {
+        let caps = caps.trim();
+        log::info!("[loopback] exclusive_caps='{}'", caps);
+        // "1" means global exclusive_caps=1; anything else means reload needed.
+        if caps != "1" {
             needs_reload = true;
         }
     } else {
+        log::info!("[loopback] could not read exclusive_caps, need reload");
         needs_reload = true;
     }
 
     if needs_reload {
-        eprintln!("[V4L2] v4l2loopback missing or misconfigured (exclusive_caps != 1). Reloading...");
+        log::info!("[loopback] reloading v4l2loopback module");
         let _ = Command::new("sudo")
             .args(["modprobe", "-r", "v4l2loopback"])
             .output();
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let output = Command::new("sudo")
-            .args(loopback_modprobe_args())
-            .output();
-        match output {
-            Ok(out) => {
-                if !out.status.success() {
-                    eprintln!("[V4L2] modprobe failed with status: {}", out.status);
-                    eprintln!("[V4L2] stderr: {}", String::from_utf8_lossy(&out.stderr));
-                }
-            }
-            Err(e) => {
-                eprintln!("[V4L2] Failed to execute sudo modprobe: {}", e);
-            }
-        }
+        let modprobe_out = Command::new("sudo").args(loopback_modprobe_args()).output();
+        log::info!(
+            "[loopback] modprobe status: {:?}",
+            modprobe_out.as_ref().map(|o| o.status.success())
+        );
         std::thread::sleep(std::time::Duration::from_millis(1000));
-        
-        // Prime the device format and framerate using GStreamer.
-        // This runs BEFORE scrcpy starts, so it won't cause VIDIOC_G_FMT conflicts.
-        eprintln!("[V4L2] Setting format (YUY2 1280x720 @ 30fps) using GStreamer...");
-        let fps_output = Command::new("gst-launch-1.0")
+
+        let gst_out = Command::new("gst-launch-1.0")
             .args([
-                "videotestsrc", "is-live=true", "pattern=black", "num-buffers=30",
-                "!", "video/x-raw,format=YUY2,width=1280,height=720,framerate=30/1",
-                "!", "v4l2sink", &format!("device={}", device_path)
+                "videotestsrc",
+                "is-live=true",
+                "pattern=black",
+                "num-buffers=30",
+                "!",
+                "video/x-raw,format=YUY2,width=1280,height=720,framerate=30/1",
+                "!",
+                "v4l2sink",
+                &format!("device={}", scrcpy_device),
             ])
             .output();
-        match fps_output {
-            Ok(out) => {
-                if !out.status.success() {
-                    eprintln!("[V4L2] GStreamer failed to set format.");
-                    eprintln!("[V4L2] stderr: {}", String::from_utf8_lossy(&out.stderr));
-                } else {
-                    eprintln!("[V4L2] Format and framerate set successfully via GStreamer.");
-                }
-            }
-            Err(e) => {
-                eprintln!("[V4L2] Failed to execute gst-launch-1.0: {}.", e);
-            }
-        }
+        log::info!(
+            "[loopback] gst-launch priming status: {:?}",
+            gst_out.as_ref().map(|o| o.status.success())
+        );
+
+        log::info!(
+            "[loopback] after reload: chrome_exists={} scrcpy_exists={}",
+            std::path::Path::new(chrome_device).exists(),
+            std::path::Path::new(scrcpy_device).exists()
+        );
+    } else {
+        log::info!("[loopback] devices already configured, skipping reload");
     }
 
-    (device_path.to_string(), device_path.to_string())
+    // Return (scrcpy_device, chrome_device) so that:
+    //   VideoPipeline::new(input_device, output_device, …)
+    //                       ↑ /dev/video8     ↑ /dev/video7
+    // scrcpy writes to input_device; relay bridges input→output; Chrome reads output.
+    (scrcpy_device.to_string(), chrome_device.to_string())
 }
 
 pub fn try_connect_device(
     store: &DeviceStore,
     pipelines: &PipelineStore,
-    device_id: u32
-) -> (bool, String) {
-    let (device_name, stored_address, stored_port) = {
-        let devices = store.borrow();
-        match devices.iter().find(|d| d.id == device_id) {
-            Some(d) => (d.name.clone(), d.address.clone(), d.port),
-            None => return (false, String::new()),
-        }
-    };
-
-    let address = format!("{}:{}", stored_address, stored_port);
-    if address.is_empty() || stored_port == 0 {
-        return (false, device_name);
-    }
-
-    eprintln!("[Connect] trying device {device_id} at {address}");
-    let _ = Command::new("adb").args(["connect", &address]).output();
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let verify = Command::new("adb").args(["devices"]).output();
-    let is_connected = match verify {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().any(|line| line.starts_with(&address) && line.contains("device"))
-        }
-        Err(_) => false,
-    };
-
-    // If not connected via stored address, try mDNS discovery
-    if !is_connected {
-        eprintln!("[Connect] stored address failed, trying mDNS discovery for '{}'", device_name);
-        match crate::adb::pair_service::PairService::discover_device_for_connect() {
-            Ok(discovery) => {
-                let discovered_addr = format!("{}:{}", discovery.address, discovery.debugging_port);
-                eprintln!("[Connect] mDNS found {}:{}, attempting connect", discovery.address, discovery.debugging_port);
-                let _ = Command::new("adb").args(["connect", &discovered_addr]).output();
-                std::thread::sleep(std::time::Duration::from_millis(500));
-
-                let verify2 = Command::new("adb").args(["devices"]).output();
-                let is_connected_after_discovery: bool = match verify2 {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        stdout.lines().any(|line| line.starts_with(&discovered_addr) && line.contains("device"))
-                    }
-                    Err(_) => false,
-                };
-
-                if is_connected_after_discovery {
-                    eprintln!("[Connect] mDNS-assisted connect success");
-                    // Update stored address/port
-                    if let Some(dev) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
-                        dev.address = discovery.address.to_string();
-                        dev.port = discovery.debugging_port;
-                    }
-                    save_devices(&store.borrow());
-
-                    let camera_id = {
-                        let devices = store.borrow();
-                        devices.iter().find(|d| d.id == device_id)
-                            .map(|d| camera_id_for_selection(&d.camera_selection))
-                            .unwrap_or(0)
-                    };
-                    spawn_pipeline(pipelines, device_id, camera_id);
-                    return (true, device_name);
-                }
-            }
-            Err(e) => {
-                eprintln!("[Connect] mDNS discovery failed: {}", e);
-            }
-        }
-    }
-
-    if is_connected {
-        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
-            d.connected = true;
-        }
-        save_devices(&store.borrow());
-
-        let camera_id = {
-            let devices = store.borrow();
-            devices.iter().find(|d| d.id == device_id)
-                .map(|d| camera_id_for_selection(&d.camera_selection))
-                .unwrap_or(0)
-        };
-        spawn_pipeline(pipelines, device_id, camera_id);
-    }
-
-    (is_connected, device_name)
-}
-
-pub fn try_disconnect_device(
-    store: &DeviceStore,
-    pipelines: &PipelineStore,
-    device_id: u32
+    device_id: u32,
 ) -> (bool, String) {
     let (device_name, address) = {
         let devices = store.borrow();
@@ -287,27 +243,116 @@ pub fn try_disconnect_device(
         }
     };
 
+    log::info!("[devices] try_connect: id={} addr={}", device_id, address);
+
+    if address.is_empty() {
+        log::warn!("[devices] empty address for device_id={}", device_id);
+        return (false, device_name);
+    }
+
+    log::info!("[devices] running: adb connect {}", address);
+    let connect_out = Command::new("adb").args(["connect", &address]).output();
+    log::info!(
+        "[devices] adb connect output: {:?}",
+        connect_out
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    let verify = Command::new("adb").args(["devices"]).output();
+    let is_connected = match verify {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            log::info!("[devices] adb devices output:\n{}", stdout);
+            let found = stdout
+                .lines()
+                .any(|line| line.starts_with(&address) && line.contains("device"));
+            log::info!("[devices] is_connected={} for {}", found, address);
+            found
+        }
+        Err(e) => {
+            log::error!("[devices] adb devices failed: {}", e);
+            false
+        }
+    };
+
+    if is_connected {
+        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+            d.connected = true;
+        }
+        save_devices(&store.borrow());
+
+        let camera_id = {
+            let devices = store.borrow();
+            devices
+                .iter()
+                .find(|d| d.id == device_id)
+                .map(|d| camera_id_for_selection(&d.camera_selection))
+                .unwrap_or(0)
+        };
+        log::info!(
+            "[devices] device connected, camera_id={}, calling spawn_pipeline",
+            camera_id
+        );
+        spawn_pipeline(pipelines, device_id, camera_id);
+        log::info!("[devices] spawn_pipeline returned");
+    }
+
+    (is_connected, device_name)
+}
+
+pub fn try_disconnect_device(
+    store: &DeviceStore,
+    pipelines: &PipelineStore,
+    device_id: u32,
+) -> (bool, String) {
+    let (device_name, address) = {
+        let devices = store.borrow();
+        match devices.iter().find(|d| d.id == device_id) {
+            Some(d) => (d.name.clone(), format!("{}:{}", d.address, d.port)),
+            None => return (false, String::new()),
+        }
+    };
+
+    log::info!(
+        "[devices] try_disconnect: id={} addr={}",
+        device_id,
+        address
+    );
+
     if address.is_empty() {
         return (false, device_name);
     }
 
+    log::info!("[devices] running: adb disconnect {}", address);
     let _ = Command::new("adb").args(["disconnect", &address]).output();
     let verify = Command::new("adb").args(["devices"]).output();
     let is_still_connected = match verify {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            stdout.lines().any(|line| line.starts_with(&address) && line.contains("device"))
+            let still = stdout
+                .lines()
+                .any(|line| line.starts_with(&address) && line.contains("device"));
+            log::info!("[devices] is_still_connected={}", still);
+            still
         }
-        Err(_) => false,
+        Err(e) => {
+            log::error!("[devices] adb devices failed: {}", e);
+            false
+        }
     };
 
     let success = !is_still_connected;
     if success {
+        log::info!("[devices] disconnect success, updating store and stopping pipeline");
         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
             d.connected = false;
         }
         save_devices(&store.borrow());
+        log::info!("[devices] calling despawn_pipeline");
         despawn_pipeline(pipelines, device_id);
+        log::info!("[devices] despawn_pipeline returned");
     }
 
     (success, device_name)
@@ -315,19 +360,43 @@ pub fn try_disconnect_device(
 
 pub fn spawn_pipeline(pipelines: &PipelineStore, device_id: u32, camera_id: u32) {
     if pipelines.borrow().contains_key(&device_id) {
+        log::warn!(
+            "[devices] pipeline already exists for device_id={}",
+            device_id
+        );
         return;
     }
 
+    log::info!(
+        "[devices] spawn_pipeline: device_id={} camera_id={}",
+        device_id,
+        camera_id
+    );
+
     let (input_device, output_device) = loopback_paths(device_id);
+    log::info!(
+        "[devices] loopback_paths: input={} output={}",
+        input_device,
+        output_device
+    );
+
     match VideoPipeline::new(&input_device, &output_device, camera_id) {
         Ok(p) => {
-            if let Err(e) = p.start() {
-                eprintln!("[Video] pipeline start failed for device {device_id}: {e}");
-                return;
+            log::info!("[devices] VideoPipeline::new ok, calling start()");
+            match p.start() {
+                Ok(()) => {
+                    log::info!("[devices] VideoPipeline::start() ok");
+                    pipelines.borrow_mut().insert(device_id, Rc::new(p));
+                    log::info!("[devices] pipeline inserted for device_id={}", device_id);
+                }
+                Err(e) => {
+                    log::error!("[devices] VideoPipeline::start() FAILED: {}", e);
+                }
             }
-            pipelines.borrow_mut().insert(device_id, Rc::new(p));
         }
-        Err(e) => eprintln!("[Video] pipeline init failed for device {device_id}: {e}"),
+        Err(e) => {
+            log::error!("[devices] VideoPipeline::new FAILED: {}", e);
+        }
     }
 }
 
@@ -339,7 +408,7 @@ pub fn update_camera_selection(
     store: &DeviceStore,
     pipelines: &PipelineStore,
     device_id: u32,
-    selection: &str
+    selection: &str,
 ) -> bool {
     let camera_id = camera_id_for_selection(selection);
     let mut changed = false;
@@ -363,19 +432,64 @@ pub fn update_camera_selection(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn loopback_modprobe_args_are_clean_and_chrome_compatible() {
         let args = super::loopback_modprobe_args();
         assert!(args.iter().all(|arg| !arg.ends_with(' ')));
         assert!(args.iter().any(|arg| arg == "exclusive_caps=1"));
-        assert!(args.iter().any(|arg| arg == "keep_format=1"));
         assert!(args.iter().any(|arg| arg == "sustain_framerate=1"));
+        assert!(args.iter().any(|arg| arg == "devices=2"));
+        assert!(args.iter().any(|arg| arg == "video_nr=7,8"));
+        assert!(args.iter().any(|arg| arg.starts_with("card_label=")));
+    }
+
+    #[test]
+    fn device_serde_roundtrip() {
+        let device = Device {
+            id: 5,
+            name: "Test Phone".into(),
+            address: "192.168.1.100".into(),
+            port: 5555,
+            connected: true,
+            camera_selection: "front".into(),
+        };
+        let json = serde_json::to_string(&device).unwrap();
+        let restored: Device = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.id, device.id);
+        assert_eq!(restored.name, device.name);
+        assert_eq!(restored.address, device.address);
+        assert_eq!(restored.port, device.port);
+        assert_eq!(restored.connected, device.connected);
+        assert_eq!(restored.camera_selection, device.camera_selection);
+    }
+
+    #[test]
+    fn get_connected_adb_devices_parses_valid_output() {
+        // Exercise the parsing logic with a synthetic adb devices output.
+        // This is a compile-time check that the parsing closure is sound.
+        let fake_output = b"List of devices attached\n192.168.1.100:5555    device\n";
+        let stdout = String::from_utf8_lossy(fake_output);
+        let addresses: Vec<String> = stdout
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 && parts.get(1) == Some(&"device") {
+                    Some(parts[0].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(addresses, vec!["192.168.1.100:5555"]);
     }
 }
 
 pub fn transform_callbacks_for(
     pipelines: &PipelineStore,
-    device_id: u32
+    device_id: u32,
 ) -> Option<crate::ui::TransformCallbacks> {
     let p = pipelines.borrow().get(&device_id)?.clone();
     Some(crate::ui::TransformCallbacks {

@@ -20,7 +20,10 @@ pub fn build_transform_section(cb: TransformCallbacks) -> gtk::Box {
     heading.set_halign(gtk::Align::Start);
     section.append(&heading);
 
-    let rot_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).build();
+    let rot_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
     let rot_lbl = gtk::Label::new(Some("Rotation"));
     rot_lbl.set_halign(gtk::Align::Start);
     rot_lbl.set_hexpand(true);
@@ -33,27 +36,39 @@ pub fn build_transform_section(cb: TransformCallbacks) -> gtk::Box {
     rot_row.append(&rot_dropdown);
     section.append(&rot_row);
 
-    let h_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).build();
+    let h_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
     let h_lbl = gtk::Label::new(Some("Horizontal Flip"));
     h_lbl.set_halign(gtk::Align::Start);
     h_lbl.set_hexpand(true);
     let h_switch = gtk::Switch::new();
     h_switch.connect_state_set({
         let f = cb.on_h_flip.clone();
-        move |_, state| { f(state); gtk::glib::Propagation::Proceed }
+        move |_, state| {
+            f(state);
+            gtk::glib::Propagation::Proceed
+        }
     });
     h_row.append(&h_lbl);
     h_row.append(&h_switch);
     section.append(&h_row);
 
-    let v_row = gtk::Box::builder().orientation(gtk::Orientation::Horizontal).spacing(8).build();
+    let v_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .build();
     let v_lbl = gtk::Label::new(Some("Vertical Flip"));
     v_lbl.set_halign(gtk::Align::Start);
     v_lbl.set_hexpand(true);
     let v_switch = gtk::Switch::new();
     v_switch.connect_state_set({
         let f = cb.on_v_flip.clone();
-        move |_, state| { f(state); gtk::glib::Propagation::Proceed }
+        move |_, state| {
+            f(state);
+            gtk::glib::Propagation::Proceed
+        }
     });
     v_row.append(&v_lbl);
     v_row.append(&v_switch);

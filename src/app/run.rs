@@ -7,8 +7,8 @@ use std::time::Duration;
 use crate::theme::setup_theme;
 use crate::ui;
 use crate::ui::devices::{
-    refresh_connected_status, next_device_id, new_device_store, save_devices,
-    try_connect_device, transform_callbacks_for, update_camera_selection, Device,
+    new_device_store, next_device_id, refresh_connected_status, save_devices,
+    transform_callbacks_for, try_connect_device, update_camera_selection, Device,
 };
 use crate::ui::sidebar::{rebuild_device_list, DeviceListContext, RefreshFn};
 use crate::video::new_pipeline_store;
@@ -21,6 +21,11 @@ use crate::tray::{start_tray_message_handler, LensCastTray};
 use ksni::TrayMethods;
 
 pub fn run() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+        .format_timestamp_millis()
+        .init();
+    log::info!("LensCast starting");
+
     let app = AdwApplication::builder().application_id(APP_ID).build();
 
     let window_ref: Rc<RefCell<Option<adw::ApplicationWindow>>> = Rc::new(RefCell::new(None));
@@ -30,7 +35,12 @@ pub fn run() {
     let hold_guards_clone = hold_guards.clone();
 
     app.connect_activate(move |app| {
-        if window_ref_clone.borrow().as_ref().map(|w| w.is_visible()).unwrap_or(false) {
+        if window_ref_clone
+            .borrow()
+            .as_ref()
+            .map(|w| w.is_visible())
+            .unwrap_or(false)
+        {
             window_ref_clone.borrow().as_ref().unwrap().present();
             return;
         }
@@ -88,7 +98,8 @@ pub fn run() {
                             let device_name = device.name.clone();
                             let device_connected = device.connected;
                             let device_camera_selection = device.camera_selection.clone();
-                            let device_camera_selection_for_connect = device_camera_selection.clone();
+                            let device_camera_selection_for_connect =
+                                device_camera_selection.clone();
 
                             let refresh_ui: Rc<dyn Fn()> = {
                                 let rh = refresh_h.clone();
@@ -124,7 +135,9 @@ pub fn run() {
                                                 let pipelines = pipelines.clone();
                                                 let refresh_ui = refresh_ui.clone();
                                                 Rc::new(move |selection| {
-                                                    if update_camera_selection(&store, &pipelines, id, &selection) {
+                                                    if update_camera_selection(
+                                                        &store, &pipelines, id, &selection,
+                                                    ) {
                                                         refresh_ui();
                                                     }
                                                 })
@@ -241,74 +254,77 @@ pub fn run() {
         let source_id: Rc<RefCell<Option<glib::source::SourceId>>> = Rc::new(RefCell::new(None));
         let source_id_clone = source_id.clone();
 
-        *source_id.borrow_mut() = Some(gtk::glib::timeout_add_local(Duration::from_secs(5), move || {
-            if refresh_connected_status(&refresh_store) {
-                if let Some(r) = refresh_h.borrow().as_ref() {
-                    r();
-                }
+        *source_id.borrow_mut() = Some(gtk::glib::timeout_add_local(
+            Duration::from_secs(5),
+            move || {
+                if refresh_connected_status(&refresh_store) {
+                    if let Some(r) = refresh_h.borrow().as_ref() {
+                        r();
+                    }
 
-                if let Some(id) = *selected_device_id.borrow() {
-                    let devices = refresh_store.borrow();
-                    if let Some(device) = devices.iter().find(|d| d.id == id) {
-                        let device_camera_selection = device.camera_selection.clone();
-                        let connect_fn: Rc<dyn Fn()> = {
-                            let store = refresh_store.clone();
-                            let pipelines = refresh_pipelines.clone();
-                            let toast = refresh_toast.clone();
-                            let rh = refresh_h.clone();
+                    if let Some(id) = *selected_device_id.borrow() {
+                        let devices = refresh_store.borrow();
+                        if let Some(device) = devices.iter().find(|d| d.id == id) {
+                            let device_camera_selection = device.camera_selection.clone();
+                            let connect_fn: Rc<dyn Fn()> = {
+                                let store = refresh_store.clone();
+                                let pipelines = refresh_pipelines.clone();
+                                let toast = refresh_toast.clone();
+                                let rh = refresh_h.clone();
 
-                            Rc::new(move || {
-                                let (is_connected, device_name) =
-                                    try_connect_device(&store, &pipelines, id);
+                                Rc::new(move || {
+                                    let (is_connected, device_name) =
+                                        try_connect_device(&store, &pipelines, id);
 
-                                let t = if is_connected {
-                                    adw::Toast::builder()
-                                        .title(format!("Connected to {}", device_name))
-                                        .timeout(3)
-                                        .build()
-                                } else {
-                                    adw::Toast::builder()
-                                        .title(format!("Failed to connect to {}", device_name))
-                                        .timeout(3)
-                                        .build()
-                                };
-                                toast.add_toast(t);
+                                    let t = if is_connected {
+                                        adw::Toast::builder()
+                                            .title(format!("Connected to {}", device_name))
+                                            .timeout(3)
+                                            .build()
+                                    } else {
+                                        adw::Toast::builder()
+                                            .title(format!("Failed to connect to {}", device_name))
+                                            .timeout(3)
+                                            .build()
+                                    };
+                                    toast.add_toast(t);
 
-                                if let Some(r) = rh.borrow().clone() {
-                                    r();
-                                }
-                            })
-                        };
-                        let camera_change_fn: Rc<dyn Fn(String)> = {
-                            let store = refresh_store.clone();
-                            let pipelines = refresh_pipelines.clone();
-                            let rh = refresh_h.clone();
-                            Rc::new(move |selection| {
-                                if update_camera_selection(&store, &pipelines, id, &selection) {
                                     if let Some(r) = rh.borrow().clone() {
                                         r();
                                     }
-                                }
-                            })
-                        };
+                                })
+                            };
+                            let camera_change_fn: Rc<dyn Fn(String)> = {
+                                let store = refresh_store.clone();
+                                let pipelines = refresh_pipelines.clone();
+                                let rh = refresh_h.clone();
+                                Rc::new(move |selection| {
+                                    if update_camera_selection(&store, &pipelines, id, &selection) {
+                                        if let Some(r) = rh.borrow().clone() {
+                                            r();
+                                        }
+                                    }
+                                })
+                            };
 
-                        ui::update_content_for_device(
-                            &content_area_for_timer,
-                            &device.name,
-                            device.connected,
-                            connect_fn,
-                            transform_callbacks_for(&refresh_pipelines, id),
-                            Some(camera_change_fn),
-                            Some(device_camera_selection.clone()),
-                        );
-                    } else {
-                        *selected_device_id.borrow_mut() = None;
-                        ui::reset_content_to_welcome(&content_area_for_timer);
+                            ui::update_content_for_device(
+                                &content_area_for_timer,
+                                &device.name,
+                                device.connected,
+                                connect_fn,
+                                transform_callbacks_for(&refresh_pipelines, id),
+                                Some(camera_change_fn),
+                                Some(device_camera_selection.clone()),
+                            );
+                        } else {
+                            *selected_device_id.borrow_mut() = None;
+                            ui::reset_content_to_welcome(&content_area_for_timer);
+                        }
                     }
                 }
-            }
-            gtk::glib::ControlFlow::Continue
-        }));
+                gtk::glib::ControlFlow::Continue
+            },
+        ));
 
         add_device_btn.connect_clicked({
             let window = window.clone();
@@ -323,7 +339,6 @@ pub fn run() {
                 ui::show_add_device_modal(
                     &window,
                     Box::new(move |name: String, address: String, port: u16| {
-                        eprintln!("[APP] Device added: name='{}', address='{}', port={}", name, address, port);
                         let device = Device {
                             id: next_device_id(),
                             name: name.clone(),
@@ -373,8 +388,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 let rt = match tokio::runtime::Runtime::new() {
                     Ok(rt) => rt,
-                    Err(e) => {
-                        eprintln!("Failed to create tokio runtime: {}", e);
+                    Err(_e) => {
                         return;
                     }
                 };

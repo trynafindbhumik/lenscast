@@ -1,8 +1,8 @@
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use rand::Rng;
 use std::net::Ipv4Addr;
-use std::time::Duration;
 use std::process::Command;
+use std::time::Duration;
 
 const SERVICE_TYPE_PAIRING: &str = "_adb-tls-pairing._tcp.local.";
 const SERVICE_TYPE_CONNECT: &str = "_adb-tls-connect._tcp.local.";
@@ -74,10 +74,7 @@ impl PairService {
 
                         let _ = self.mdns.stop_browse(SERVICE_TYPE_PAIRING);
 
-                        if let Some(addr) = client_addresses
-                            .iter()
-                            .find(|addr| addr.is_private())
-                        {
+                        if let Some(addr) = client_addresses.iter().find(|addr| addr.is_private()) {
                             break (**addr, port);
                         } else {
                             return Err("No private client address found".into());
@@ -129,7 +126,7 @@ impl PairService {
         })
     }
 
-    /// Discovers already-paired device via mDNS connect service (no pairing).
+    #[allow(dead_code)]
     pub fn discover_device_for_connect() -> Result<DeviceInfo, Box<dyn std::error::Error>> {
         let mdns = ServiceDaemon::new()?;
         let receiver = mdns.browse(SERVICE_TYPE_CONNECT)?;
@@ -147,7 +144,6 @@ impl PairService {
                     let port = info.get_port();
 
                     if let Some(addr) = addresses.iter().find(|addr| addr.is_private()) {
-                        eprintln!("[mDNS] Discovered connect service: {}:{}", addr, port);
                         return Ok(DeviceInfo {
                             address: **addr,
                             pairing_port: 0,
@@ -158,22 +154,16 @@ impl PairService {
                 Ok(_) => {}
                 Err(flume::RecvTimeoutError::Timeout) => continue,
                 Err(flume::RecvTimeoutError::Disconnected) => {
-                    // Channel closed — browse service unregistered. Keep waiting.
                     std::thread::sleep(Duration::from_millis(500));
-                    // Retry browse with fresh receiver
                     let receiver = mdns.browse(SERVICE_TYPE_CONNECT)?;
                     let _ = receiver.recv_timeout(Duration::from_millis(100));
                 }
-                Err(err) => return Err(format!("mDNS error: {}", err).into()),
             }
         }
     }
 
     /// Pairs with device (QR flow — no connect).
-    pub fn execute_pair_only(
-        device: &DeviceInfo,
-        password: &str,
-    ) -> Result<DeviceInfo, String> {
+    pub fn execute_pair_only(device: &DeviceInfo, password: &str) -> Result<DeviceInfo, String> {
         let pair_output = Command::new("adb")
             .args([
                 "pair",
@@ -193,7 +183,7 @@ impl PairService {
         Ok(device.clone())
     }
 
-    /// Pairs with device and establishes connection (IP/manual flow).
+    #[allow(dead_code)]
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,

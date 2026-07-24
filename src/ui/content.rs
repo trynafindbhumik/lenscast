@@ -1,19 +1,17 @@
 use gtk::prelude::*;
-use gtk::{ Label, Orientation, Box as GtkBox, Image, Button };
+use gtk::{Box as GtkBox, Button, Image, Label, Orientation};
 use std::rc::Rc;
 
 /// Creates the main content area shown when no device is selected.
 pub fn create_content_area() -> (gtk::Box, gtk::Box) {
-    let content_container = gtk::Box
-        ::builder()
+    let content_container = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .vexpand(true)
         .hexpand(true)
         .build();
 
     // Content area that changes based on selection
-    let content_area = gtk::Box
-        ::builder()
+    let content_area = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -23,7 +21,7 @@ pub fn create_content_area() -> (gtk::Box, gtk::Box) {
 
     let welcome = Label::new(None);
     welcome.set_markup(
-        "<b><big>Welcome to LensCast</big></b>\n\nSelect a device from the sidebar to get started"
+        "<b><big>Welcome to LensCast</big></b>\n\nSelect a device from the sidebar to get started",
     );
     welcome.add_css_class("dim-label");
     welcome.set_justify(gtk::Justification::Center);
@@ -93,7 +91,11 @@ pub fn update_content_for_device(
         camera_label.set_hexpand(true);
         let camera_dropdown = gtk::DropDown::from_strings(&["Back", "Front"]);
         if let Some(selection) = current_camera_selection {
-            camera_dropdown.set_selected(if selection.to_lowercase() == "front" { 1 } else { 0 });
+            camera_dropdown.set_selected(if selection.to_lowercase() == "front" {
+                1
+            } else {
+                0
+            });
         }
         if let Some(on_camera_changed) = on_camera_changed {
             camera_dropdown.connect_selected_notify(move |dropdown| {
@@ -109,7 +111,6 @@ pub fn update_content_for_device(
         vbox.append(&camera_row);
 
         content_area.append(&vbox);
-
     } else {
         // Show disconnect image and connect button
         let icon = Image::from_icon_name("network-wireless-symbolic");
@@ -165,7 +166,7 @@ pub fn reset_content_to_welcome(content_area: &gtk::Box) {
 
     let welcome = Label::new(None);
     welcome.set_markup(
-        "<b><big>Welcome to LensCast</big></b>\n\nSelect a device from the sidebar to get started"
+        "<b><big>Welcome to LensCast</big></b>\n\nSelect a device from the sidebar to get started",
     );
     welcome.add_css_class("dim-label");
     welcome.set_justify(gtk::Justification::Center);

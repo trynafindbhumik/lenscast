@@ -191,8 +191,14 @@ pub fn show_add_device_modal(
         }
     });
 
-    next_btn.connect_clicked({ let v = validate.clone(); move |_| v() });
-    entry.connect_activate({ let v = validate.clone(); move |_| v() });
+    next_btn.connect_clicked({
+        let v = validate.clone();
+        move |_| v()
+    });
+    entry.connect_activate({
+        let v = validate.clone();
+        move |_| v()
+    });
     entry.connect_changed({
         let error_label = error_label.clone();
         move |e| {

@@ -1,11 +1,11 @@
+use adw::prelude::*;
+use gtk::{Label, Orientation};
 use std::cell::RefCell;
 use std::process::Command;
-use adw::prelude::*;
-use gtk::{ Label, Orientation };
 use std::rc::Rc;
 
+use crate::ui::devices::{save_devices, Device, DeviceStore};
 use crate::video::PipelineStore;
-use crate::ui::devices::{ save_devices, Device, DeviceStore };
 
 /// Shared callback type for refreshing the device list.
 pub(crate) type RefreshFn = Rc<dyn Fn()>;
@@ -27,7 +27,9 @@ pub(crate) struct DeviceListContext {
 
 /// Returns (sidebar_box, device_listbox, selected_device_id_cell).
 pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
-    let sidebar = gtk::Box::builder().orientation(Orientation::Vertical).build();
+    let sidebar = gtk::Box::builder()
+        .orientation(Orientation::Vertical)
+        .build();
     sidebar.set_size_request(240, -1);
     sidebar.add_css_class("sidebar");
 
@@ -39,14 +41,12 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
     sidebar_header.set_margin_bottom(8);
     sidebar.append(&sidebar_header);
 
-    let scroll = gtk::ScrolledWindow
-        ::builder()
+    let scroll = gtk::ScrolledWindow::builder()
         .vexpand(true)
         .hscrollbar_policy(gtk::PolicyType::Never)
         .build();
 
-    let device_listbox = gtk::ListBox
-        ::builder()
+    let device_listbox = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .show_separators(false)
         .build();
@@ -62,21 +62,18 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
 
 /// Repopulates the device list after add/edit/delete.
 pub fn rebuild_device_list(ctx: &DeviceListContext) {
-    eprintln!("[Sidebar] rebuild_device_list called, clearing listbox");
-
     // First clear all existing children
     while let Some(child) = ctx.listbox.first_child() {
         ctx.listbox.remove(&child);
     }
 
-    eprintln!("[Sidebar] Listbox cleared");
-
     let devices = ctx.store.borrow().clone();
-    eprintln!("[Sidebar] Devices count: {}", devices.len());
 
     if devices.is_empty() {
-        eprintln!("[Sidebar] Showing empty state");
-        let empty_row = gtk::ListBoxRow::builder().activatable(false).selectable(false).build();
+        let empty_row = gtk::ListBoxRow::builder()
+            .activatable(false)
+            .selectable(false)
+            .build();
         let lbl = Label::new(Some("No devices added"));
         lbl.add_css_class("dim-label");
         lbl.set_halign(gtk::Align::Start);
@@ -86,19 +83,15 @@ pub fn rebuild_device_list(ctx: &DeviceListContext) {
         empty_row.set_child(Some(&lbl));
         ctx.listbox.append(&empty_row);
     } else {
-        eprintln!("[Sidebar] Building {} device rows", devices.len());
         for device in &devices {
             let row = build_device_row(device, ctx);
             ctx.listbox.append(&row);
         }
     }
-
-    eprintln!("[Sidebar] rebuild_device_list done");
 }
 
 fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow {
-    let row_box = gtk::Box
-        ::builder()
+    let row_box = gtk::Box::builder()
         .orientation(Orientation::Horizontal)
         .spacing(0)
         .margin_start(8)
@@ -126,8 +119,7 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
 
     let spacer = gtk::Box::builder().hexpand(true).build();
 
-    let menu_btn = gtk::MenuButton
-        ::builder()
+    let menu_btn = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .has_frame(false)
         .valign(gtk::Align::Center)
@@ -143,7 +135,10 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
     row_box.append(&connected_indicator);
     row_box.append(&menu_btn);
 
-    let row = gtk::ListBoxRow::builder().activatable(true).selectable(false).build();
+    let row = gtk::ListBoxRow::builder()
+        .activatable(true)
+        .selectable(false)
+        .build();
     row.add_css_class("device-row");
     row.set_child(Some(&row_box));
 
@@ -163,7 +158,9 @@ fn build_device_row(device: &Device, ctx: &DeviceListContext) -> gtk::ListBoxRow
         let on_select = ctx.on_select.clone();
 
         // Use click controller for reliable click handling
-        let click = gtk::GestureClick::builder().button(gtk::gdk::BUTTON_PRIMARY).build();
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
 
         click.connect_pressed(move |_, _, _, _| {
             *selected_id.borrow_mut() = Some(device_id);
@@ -192,14 +189,13 @@ fn build_device_popover(
     device: &Device,
     ctx: &DeviceListContext,
     name_lbl: &Label,
-    connected_indicator: &Label
+    connected_indicator: &Label,
 ) -> gtk::Popover {
     let popover = gtk::Popover::new();
     popover.set_has_arrow(false);
     popover.add_css_class("device-popover");
 
-    let vbox = gtk::Box
-        ::builder()
+    let vbox = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .spacing(2)
         .margin_start(4)
@@ -209,7 +205,8 @@ fn build_device_popover(
         .build();
 
     // Get current connection status from store dynamically
-    let current_connected = ctx.store
+    let current_connected = ctx
+        .store
         .borrow()
         .iter()
         .find(|d| d.id == device.id)
@@ -237,11 +234,23 @@ fn build_device_popover(
         connect_btn.connect_clicked(move |_| {
             p.popdown();
 
+            log::info!(
+                "[sidebar] connect_btn clicked for device_id={} is_connected={}",
+                device_id,
+                is_connected
+            );
+
             let (success, device_name) = if is_connected {
                 crate::ui::devices::try_disconnect_device(&store, &pipelines, device_id)
             } else {
                 crate::ui::devices::try_connect_device(&store, &pipelines, device_id)
             };
+
+            log::info!(
+                "[sidebar] connect result: success={} device={}",
+                success,
+                device_name
+            );
 
             if success {
                 conn_indicator.set_visible(!is_connected);
@@ -258,9 +267,12 @@ fn build_device_popover(
                     on_select(Some(device_id));
                 }
             } else {
-                let action = if is_connected { "disconnect from" } else { "connect to" };
-                let t = adw::Toast
-                    ::builder()
+                let action = if is_connected {
+                    "disconnect from"
+                } else {
+                    "connect to"
+                };
+                let t = adw::Toast::builder()
                     .title(format!("Failed to {} {}", action, device_name))
                     .timeout(3)
                     .build();
@@ -286,8 +298,7 @@ fn build_device_popover(
     }
     vbox.append(&edit_btn);
 
-    let sep = gtk::Separator
-        ::builder()
+    let sep = gtk::Separator::builder()
         .orientation(Orientation::Horizontal)
         .margin_top(4)
         .margin_bottom(4)
@@ -311,13 +322,20 @@ fn build_device_popover(
 }
 
 fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
-    let row = gtk::Box::builder().orientation(Orientation::Horizontal).spacing(10).build();
+    let row = gtk::Box::builder()
+        .orientation(Orientation::Horizontal)
+        .spacing(10)
+        .build();
 
     let img = gtk::Image::from_icon_name(icon);
     img.set_pixel_size(14);
     row.append(&img);
 
-    let lbl = Label::builder().label(label).halign(gtk::Align::Start).hexpand(true).build();
+    let lbl = Label::builder()
+        .label(label)
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .build();
     row.append(&lbl);
 
     let btn = gtk::Button::builder().child(&row).build();
@@ -330,15 +348,15 @@ fn make_popover_btn(label: &str, icon: &str, destructive: bool) -> gtk::Button {
 }
 
 fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
-    let current_name = ctx.store
+    let current_name = ctx
+        .store
         .borrow()
         .iter()
         .find(|d| d.id == device_id)
         .map(|d| d.name.clone())
         .unwrap_or_default();
 
-    let dialog = adw::Window
-        ::builder()
+    let dialog = adw::Window::builder()
         .modal(true)
         .transient_for(&ctx.window)
         .title("Edit Device Name")
@@ -350,7 +368,9 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
 
     let tv = adw::ToolbarView::new();
 
-    let hdr = adw::HeaderBar::builder().show_end_title_buttons(false).build();
+    let hdr = adw::HeaderBar::builder()
+        .show_end_title_buttons(false)
+        .build();
     hdr.add_css_class("flat");
 
     let cancel_btn = gtk::Button::builder().label("Cancel").build();
@@ -361,8 +381,7 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
     hdr.pack_end(&save_btn);
     tv.add_top_bar(&hdr);
 
-    let body = gtk::Box
-        ::builder()
+    let body = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
@@ -372,18 +391,23 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
         .margin_end(24)
         .build();
 
-    let lbl = Label::builder().label("Device name").halign(gtk::Align::Start).build();
+    let lbl = Label::builder()
+        .label("Device name")
+        .halign(gtk::Align::Start)
+        .build();
     lbl.add_css_class("modal-field-label");
 
-    let entry = gtk::Entry
-        ::builder()
+    let entry = gtk::Entry::builder()
         .text(&current_name)
         .hexpand(true)
         .activates_default(true)
         .build();
     entry.add_css_class("modal-entry");
 
-    let err_lbl = Label::builder().label("Name cannot be empty.").halign(gtk::Align::Start).build();
+    let err_lbl = Label::builder()
+        .label("Name cannot be empty.")
+        .halign(gtk::Align::Start)
+        .build();
     err_lbl.add_css_class("modal-error-label");
     err_lbl.set_visible(false);
 
@@ -412,12 +436,7 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
                 return;
             }
             let new_name = trimmed.to_string();
-            if
-                let Some(d) = store
-                    .borrow_mut()
-                    .iter_mut()
-                    .find(|d| d.id == device_id)
-            {
+            if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
                 d.name = new_name.clone();
             }
             name_lbl.set_label(&new_name);
@@ -432,8 +451,7 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
 
             refresh();
 
-            let toast = adw::Toast
-                ::builder()
+            let toast = adw::Toast::builder()
                 .title(format!("Device renamed to \"{}\"", new_name))
                 .timeout(3)
                 .build();
@@ -471,15 +489,11 @@ fn show_edit_dialog(device_id: u32, ctx: &DeviceListContext, name_lbl: &Label) {
     entry.select_region(0, -1);
 }
 
-fn delete_device(
-    device_id: u32,
-    ctx: &DeviceListContext,
-) {
-    eprintln!("[Delete] delete_device called for device_id: {}", device_id);
-
+fn delete_device(device_id: u32, ctx: &DeviceListContext) {
     let device_address = {
         let devices = ctx.store.borrow();
-        devices.iter()
+        devices
+            .iter()
             .find(|d| d.id == device_id)
             .map(|d| format!("{}:{}", d.address, d.port))
     };
@@ -488,7 +502,7 @@ fn delete_device(
         let _ = Command::new("adb").args(["disconnect", addr]).spawn();
     }
 
-    crate::ui::devices::despawn_pipeline(&ctx.pipelines, device_id); // NEW
+    crate::ui::devices::despawn_pipeline(&ctx.pipelines, device_id);
 
     let removed: Option<Device> = {
         let mut v = ctx.store.borrow_mut();
