@@ -107,9 +107,7 @@ pub fn refresh_connected_status(store: &DeviceStore) -> bool {
     changed
 }
 
-// Two v4l2loopback devices: /dev/video7 (Chrome) and /dev/video8 (scrcpy/relay).
-// scrcpy → /dev/video8 → [GStreamer relay] → /dev/video7 ← Chrome
-// sustain_framerate=1 keeps frames flowing while scrcpy restarts during camera switch.
+// /dev/video8 (scrcpy) → [GStreamer relay] → /dev/video7 (Chrome).
 fn loopback_modprobe_args() -> Vec<String> {
     vec![
         "modprobe".to_string(),
@@ -197,7 +195,6 @@ fn loopback_paths(_device_id: u32) -> (String, String) {
         log::info!("[loopback] devices already configured, skipping reload");
     }
 
-    // Return (scrcpy_device, chrome_device): scrcpy→/dev/video8, relay→/dev/video7, Chrome reads
     (scrcpy_device.to_string(), chrome_device.to_string())
 }
 
@@ -229,7 +226,6 @@ pub fn try_connect_device(
     log::info!("[devices] running: adb connect {}", address_str);
     let _connect_out = Command::new("adb").args(["connect", &address_str]).output();
 
-    // Check if saved port worked
     let verify = Command::new("adb").args(["devices"]).output();
     let mut is_connected = match verify {
         Ok(out) => {
@@ -244,7 +240,6 @@ pub fn try_connect_device(
         }
     };
 
-    // If saved port failed, try mDNS discovery to find the actual debug port
     if !is_connected {
         log::info!(
             "[devices] saved port {} failed, trying mDNS discovery",
@@ -306,8 +301,7 @@ pub fn try_connect_device(
     (is_connected, device_name)
 }
 
-/// Returns (address, port, debugging_port_from_mdns) for a device
-/// All ADB/mDNS calls that can block - runs on main thread but doesn't mutate store
+// Returns (address, port, debugging_port_from_mdns). All ADB/mDNS calls that can block.
 fn probe_device_connect(address: &str, port: u16) -> (bool, String, u16, Option<(String, u16)>) {
     let address_str = format!("{}:{}", address, port);
 
@@ -387,8 +381,7 @@ fn probe_device_connect(address: &str, port: u16) -> (bool, String, u16, Option<
     (is_connected, address_str, port, mdns_update)
 }
 
-/// Connects a device - ADB calls and pipeline spawn run in thread.
-/// Sends (is_connected, device_name, mdns_update) through channel when done.
+// ADB + pipeline spawn in thread. Sends result via channel.
 #[allow(clippy::type_complexity)]
 pub fn try_connect_device_background(
     store: &DeviceStore,
@@ -412,7 +405,6 @@ pub fn try_connect_device_background(
         }
     };
 
-    // Run blocking ADB calls AND pipeline spawn in a separate thread
     std::thread::spawn(move || {
         let (is_connected, _address_str, _port, mdns_update) = probe_device_connect(&address, port);
 
@@ -422,19 +414,16 @@ pub fn try_connect_device_background(
                 device_name
             );
 
-            // Spawn pipeline in this thread too (blocks until scrcpy starts)
             let camera_id = camera_id_for_selection(&camera_selection);
             spawn_pipeline(&pipelines, device_id, camera_id);
 
             log::info!("[devices] background pipeline spawned for {}", device_name);
         }
 
-        // Send result with mdns_update
         let _ = tx.send((is_connected, device_name.clone(), mdns_update));
     });
 }
 
-/// Apply connect result to store on the caller's (main) thread (non-blocking)
 pub fn apply_connect_result(
     store: &DeviceStore,
     device_id: u32,
@@ -450,7 +439,6 @@ pub fn apply_connect_result(
     if is_connected {
         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
             d.connected = true;
-            // Apply mDNS port update if discovered
             if let Some((new_address, new_port)) = mdns_update {
                 d.address = new_address;
                 d.port = new_port;
@@ -571,8 +559,11 @@ pub fn update_camera_selection(
 
     if changed {
         save_devices(&store.borrow());
-        if let Some(p) = pipelines.lock().unwrap().get(&device_id) {
-            p.switch_camera(camera_id);
+        // Cloning Arc and offloading to a background thread prevents GTK main loop freeze.
+        if let Some(p) = pipelines.lock().unwrap().get(&device_id).cloned() {
+            std::thread::spawn(move || {
+                p.switch_camera(camera_id);
+            });
         }
     }
 
@@ -616,8 +607,6 @@ mod tests {
 
     #[test]
     fn get_connected_adb_devices_parses_valid_output() {
-        // Exercise the parsing logic with a synthetic adb devices output.
-        // This is a compile-time check that the parsing closure is sound.
         let fake_output = b"List of devices attached\n192.168.1.100:5555    device\n";
         let stdout = String::from_utf8_lossy(fake_output);
         let addresses: Vec<String> = stdout
@@ -644,15 +633,30 @@ pub fn transform_callbacks_for(
     Some(crate::ui::TransformCallbacks {
         on_rotation: Rc::new({
             let p = p.clone();
-            move |i| p.set_rotation(crate::video::Rotation::from_index(i))
+            move |i| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    p.set_rotation(crate::video::Rotation::from_index(i));
+                });
+            }
         }),
         on_h_flip: Rc::new({
             let p = p.clone();
-            move |on| p.set_horizontal_flip(on)
+            move |on| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    p.set_horizontal_flip(on);
+                });
+            }
         }),
         on_v_flip: Rc::new({
             let p = p.clone();
-            move |on| p.set_vertical_flip(on)
+            move |on| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    p.set_vertical_flip(on);
+                });
+            }
         }),
     })
 }
