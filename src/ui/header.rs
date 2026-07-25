@@ -1,6 +1,7 @@
 use gtk::prelude::*;
 use gtk::{Button, Image, Label, Orientation};
 
+/// Creates the "Add Device" button with an icon and label.
 pub fn create_add_device_button() -> Button {
     let add_device_btn = Button::builder().label("Add Device").build();
     let btn_box = gtk::Box::builder()
@@ -19,6 +20,7 @@ pub fn create_add_device_button() -> Button {
     add_device_btn
 }
 
+/// Creates the header bar with title and add button.
 pub fn create_header_bar(add_device_btn: &Button) -> adw::HeaderBar {
     let title_label = Label::new(None);
     title_label.set_markup("<b>LensCast</b>");

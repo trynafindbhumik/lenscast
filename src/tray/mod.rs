@@ -36,7 +36,6 @@ impl ksni::Tray for LensCastTray {
             StandardItem {
                 label: "Show".into(),
                 activate: std::boxed::Box::new(|tray: &mut Self| {
-                    // try_send is fine here — channel is unbounded and never blocks
                     let _ = tray.sender.try_send(TrayMessage::Show);
                 }),
                 ..Default::default()
@@ -54,12 +53,12 @@ impl ksni::Tray for LensCastTray {
     }
 }
 
-/// Processes tray messages on the GTK main thread using async_channel.
-/// recv().await is non-blocking — it yields to the GLib event loop while waiting.
+/// Processes tray messages on the GTK main thread.
 pub fn start_tray_message_handler(
     app: AdwApplication,
     window_ref: Rc<RefCell<Option<adw::ApplicationWindow>>>,
     device_store: crate::ui::devices::DeviceStore,
+    pipeline_store: crate::video::PipelineStore,
     rx: async_channel::Receiver<TrayMessage>,
 ) {
     let ctx = glib::MainContext::default();
@@ -73,19 +72,40 @@ pub fn start_tray_message_handler(
                     }
                 }
                 TrayMessage::QuitAndDisconnect => {
-                    eprintln!("[Tray] Quit with disconnect requested");
-                    
-                    // Disconnect all devices
-                    let devices = device_store.borrow();
-                    for device in devices.iter() {
+                    // Step 1: Explicitly stop every video pipeline.
+                    //
+                    // Each pipeline owns a scrcpy child process and a GStreamer relay
+                    // child process.  VideoPipeline::stop() kills both and waits for
+                    // them to exit, so no orphan processes are left behind.
+                    //
+                    // We call stop() before clearing the store because other Arc clones
+                    // held by closures in run.rs keep the refcount above 1, so
+                    // clearing the store alone would NOT trigger Drop on the pipeline.
+                    let pipelines_to_stop: Vec<_> =
+                        pipeline_store.lock().unwrap().values().cloned().collect();
+
+                    for pipeline in &pipelines_to_stop {
+                        log::info!("[tray] stopping pipeline before quit");
+                        pipeline.stop();
+                    }
+                    drop(pipelines_to_stop);
+                    pipeline_store.lock().unwrap().clear();
+
+                    // Step 2: Disconnect ADB from every paired device.
+                    //
+                    // Use output() (blocking) instead of spawn() so each disconnect
+                    // completes before we call app.quit().  adb disconnect is fast
+                    // (<100 ms), so briefly blocking the GTK main loop is acceptable
+                    // during an application shutdown sequence.
+                    for device in device_store.borrow().iter() {
                         let addr = format!("{}:{}", device.address, device.port);
-                        eprintln!("[Tray] Disconnecting: adb disconnect {}", addr);
+                        log::info!("[tray] adb disconnect {}", addr);
                         let _ = std::process::Command::new("adb")
                             .args(["disconnect", &addr])
-                            .spawn();
+                            .output();
                     }
-                    drop(devices); // Release borrow before quitting
-                    
+
+                    // Step 3: Hide the window then quit.
                     if let Some(window) = window_ref.borrow().as_ref() {
                         window.set_visible(false);
                     }
