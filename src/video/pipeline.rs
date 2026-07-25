@@ -15,8 +15,9 @@
 //   • Relay is killed only in stop() (full device disconnect).
 
 use super::types::Rotation;
-use std::cell::{Cell, RefCell};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 pub fn camera_id_for_selection(selection: &str) -> u32 {
     match selection.trim().to_lowercase().as_str() {
@@ -63,8 +64,8 @@ fn start_relay_process(input_device: &str, output_device: &str) -> Result<Child,
             &format!("device={}", output_device),
             "sync=false",
         ])
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("failed to start GStreamer relay: {e}"))?;
     Ok(child)
@@ -107,13 +108,13 @@ pub struct VideoPipeline {
     sink_device: String,
     /// /dev/video7 — Chrome-facing device; relay writes here, Chrome reads here.
     output_device: String,
-    camera_id: Cell<u32>,
-    scrcpy_process: RefCell<Option<Child>>,
+    camera_id: AtomicU32,
+    scrcpy_process: Mutex<Option<Child>>,
     /// Persistent GStreamer relay (sink_device → output_device).
     /// This is intentionally NEVER restarted during camera switching so that
     /// Chrome always has an active VIDIOC_STREAMON writer on output_device and
     /// never transitions its MediaStreamTrack to the 'ended' state.
-    relay_process: RefCell<Option<Child>>,
+    relay_process: Mutex<Option<Child>>,
 }
 
 impl VideoPipeline {
@@ -146,9 +147,9 @@ impl VideoPipeline {
         Ok(Self {
             sink_device: scrcpy_device,
             output_device: chrome_device,
-            camera_id: Cell::new(camera_id),
-            scrcpy_process: RefCell::new(None),
-            relay_process: RefCell::new(relay),
+            camera_id: AtomicU32::new(camera_id),
+            scrcpy_process: Mutex::new(None),
+            relay_process: Mutex::new(relay),
         })
     }
 
@@ -183,7 +184,7 @@ impl VideoPipeline {
             return;
         }
 
-        let mut relay = self.relay_process.borrow_mut();
+        let mut relay = self.relay_process.lock().unwrap();
         if relay.is_some() {
             log::info!("[pipeline] start_relay: already running");
             return;
@@ -240,13 +241,13 @@ impl VideoPipeline {
     }
 
     fn start_scrcpy(&self) -> Result<(), String> {
-        let mut child_guard = self.scrcpy_process.borrow_mut();
+        let mut child_guard = self.scrcpy_process.lock().unwrap();
         if child_guard.is_some() {
             log::info!("[pipeline] start_scrcpy: already running");
             return Ok(());
         }
 
-        let args = scrcpy_command_args(&self.sink_device, self.camera_id.get());
+        let args = scrcpy_command_args(&self.sink_device, self.camera_id.load(Ordering::SeqCst));
         log::info!(
             "[pipeline] start_scrcpy: spawning scrcpy with args={:?}",
             args
@@ -283,7 +284,7 @@ impl VideoPipeline {
     }
 
     fn stop_scrcpy(&self) {
-        if let Some(mut child) = self.scrcpy_process.borrow_mut().take() {
+        if let Some(mut child) = self.scrcpy_process.lock().unwrap().take() {
             log::info!("[pipeline] stop_scrcpy: killing scrcpy");
             let _ = child.kill();
             let _ = child.wait();
@@ -295,7 +296,7 @@ impl VideoPipeline {
             return;
         }
 
-        let mut relay = self.relay_process.borrow_mut();
+        let mut relay = self.relay_process.lock().unwrap();
         let has_exited = match relay.as_mut() {
             Some(child) => matches!(child.try_wait(), Ok(Some(_))),
             None => true,
@@ -319,7 +320,7 @@ impl VideoPipeline {
 
         std::thread::sleep(std::time::Duration::from_millis(300));
 
-        self.camera_id.set(new_camera_id);
+        self.camera_id.store(new_camera_id, Ordering::SeqCst);
         if let Err(e) = self.start_scrcpy() {
             log::error!("[pipeline] switch_camera: start_scrcpy FAILED: {}", e);
         }
@@ -331,7 +332,7 @@ impl VideoPipeline {
     pub fn stop(&self) {
         log::info!("[pipeline] stop: stopping scrcpy and relay");
         self.stop_scrcpy();
-        if let Some(mut relay) = self.relay_process.borrow_mut().take() {
+        if let Some(mut relay) = self.relay_process.lock().unwrap().take() {
             let _ = relay.kill();
             let _ = relay.wait();
         }

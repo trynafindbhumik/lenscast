@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{mpsc, Arc};
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
 
@@ -257,9 +258,7 @@ pub fn try_connect_device(
 
     // Try connect with saved port first
     log::info!("[devices] running: adb connect {}", address_str);
-    let connect_out = Command::new("adb")
-        .args(["connect", &address_str])
-        .output();
+    let connect_out = Command::new("adb").args(["connect", &address_str]).output();
     log::info!(
         "[devices] adb connect output: {:?}",
         connect_out
@@ -289,8 +288,7 @@ pub fn try_connect_device(
             "[devices] saved port {} failed, trying mDNS discovery",
             address_str
         );
-        if let Ok(discovered) =
-            crate::adb::pair_service::PairService::discover_device_for_connect()
+        if let Ok(discovered) = crate::adb::pair_service::PairService::discover_device_for_connect()
         {
             let discovered_addr = format!("{}:{}", discovered.address, discovered.debugging_port);
             log::info!(
@@ -312,9 +310,9 @@ pub fn try_connect_device(
             // Verify the new connection
             if let Ok(out) = Command::new("adb").args(["devices"]).output() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                is_connected = stdout.lines().any(
-                    |line| line.starts_with(&discovered_addr) && line.contains("device"),
-                );
+                is_connected = stdout
+                    .lines()
+                    .any(|line| line.starts_with(&discovered_addr) && line.contains("device"));
             }
 
             // Update stored port if mDNS gave us a different one
@@ -358,6 +356,166 @@ pub fn try_connect_device(
     }
 
     (is_connected, device_name)
+}
+
+/// Returns (address, port, debugging_port_from_mdns) for a device
+/// All ADB/mDNS calls that can block - runs on main thread but doesn't mutate store
+fn probe_device_connect(address: &str, port: u16) -> (bool, String, u16, Option<(String, u16)>) {
+    let address_str = format!("{}:{}", address, port);
+
+    if address.is_empty() {
+        return (false, address_str, port, None);
+    }
+
+    log::info!("[devices] running: adb connect {}", address_str);
+    let connect_out = Command::new("adb").args(["connect", &address_str]).output();
+    log::info!(
+        "[devices] adb connect output: {:?}",
+        connect_out
+            .as_ref()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    );
+
+    let verify = Command::new("adb").args(["devices"]).output();
+    let mut is_connected = match verify {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            log::info!("[devices] adb devices output:\n{}", stdout);
+            stdout
+                .lines()
+                .any(|line| line.starts_with(&address_str) && line.contains("device"))
+        }
+        Err(e) => {
+            log::error!("[devices] adb devices failed: {}", e);
+            false
+        }
+    };
+
+    let mut mdns_update: Option<(String, u16)> = None;
+
+    if !is_connected {
+        log::info!(
+            "[devices] saved port {} failed, trying mDNS discovery",
+            address_str
+        );
+        if let Ok(discovered) = crate::adb::pair_service::PairService::discover_device_for_connect()
+        {
+            let discovered_addr = format!("{}:{}", discovered.address, discovered.debugging_port);
+            log::info!(
+                "[devices] mDNS discovered {} - trying adb connect",
+                discovered_addr
+            );
+
+            let discovered_out = Command::new("adb")
+                .args(["connect", &discovered_addr])
+                .output();
+            log::info!(
+                "[devices] adb connect {} output: {:?}",
+                discovered_addr,
+                discovered_out
+                    .as_ref()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            );
+
+            if let Ok(out) = Command::new("adb").args(["devices"]).output() {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                is_connected = stdout
+                    .lines()
+                    .any(|line| line.starts_with(&discovered_addr) && line.contains("device"));
+            }
+
+            if is_connected {
+                log::info!(
+                    "[devices] mDNS connect succeeded, updating stored port {} -> {}",
+                    port,
+                    discovered.debugging_port
+                );
+                mdns_update = Some((discovered.address.to_string(), discovered.debugging_port));
+            }
+        } else {
+            log::warn!("[devices] mDNS discovery found no device");
+        }
+    }
+
+    (is_connected, address_str, port, mdns_update)
+}
+
+/// Connects a device - ADB calls and pipeline spawn run in thread.
+/// Sends (is_connected, device_name, mdns_update) through channel when done.
+pub fn try_connect_device_background(
+    store: &DeviceStore,
+    pipelines: PipelineStore,
+    device_id: u32,
+    tx: mpsc::Sender<(bool, String, Option<(String, u16)>)>,
+) {
+    let (device_name, address, port, camera_selection) = {
+        let devices = store.borrow();
+        match devices.iter().find(|d| d.id == device_id) {
+            Some(d) => (
+                d.name.clone(),
+                d.address.clone(),
+                d.port,
+                d.camera_selection.clone(),
+            ),
+            None => {
+                let _ = tx.send((false, String::new(), None));
+                return;
+            }
+        }
+    };
+
+    // Run blocking ADB calls AND pipeline spawn in a separate thread
+    std::thread::spawn(move || {
+        let (is_connected, _address_str, _port, mdns_update) =
+            probe_device_connect(&address, port);
+
+        if is_connected {
+            log::info!(
+                "[devices] background ADB connect succeeded, spawning pipeline for {}",
+                device_name
+            );
+
+            // Spawn pipeline in this thread too (blocks until scrcpy starts)
+            let camera_id = camera_id_for_selection(&camera_selection);
+            spawn_pipeline(&pipelines, device_id, camera_id);
+
+            log::info!("[devices] background pipeline spawned for {}", device_name);
+        }
+
+        // Send result with mdns_update
+        let _ = tx.send((is_connected, device_name.clone(), mdns_update));
+    });
+}
+
+/// Apply connect result to store on the caller's (main) thread (non-blocking)
+pub fn apply_connect_result(
+    store: &DeviceStore,
+    device_id: u32,
+    is_connected: bool,
+    _device_name: &str,
+    mdns_update: Option<(String, u16)>,
+) {
+    log::info!(
+        "[devices] apply_connect_result: device_id={} is_connected={}",
+        device_id,
+        is_connected
+    );
+    if is_connected {
+        if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
+            d.connected = true;
+            // Apply mDNS port update if discovered
+            if let Some((new_address, new_port)) = mdns_update {
+                d.address = new_address;
+                d.port = new_port;
+                log::info!("[devices] applied mdns update: {}:{}", d.address, d.port);
+            }
+        }
+        save_devices(&store.borrow());
+        log::info!(
+            "[devices] store updated for connected device_id={}",
+            device_id
+        );
+    }
 }
 
 pub fn try_disconnect_device(
@@ -417,7 +575,7 @@ pub fn try_disconnect_device(
 }
 
 pub fn spawn_pipeline(pipelines: &PipelineStore, device_id: u32, camera_id: u32) {
-    if pipelines.borrow().contains_key(&device_id) {
+    if pipelines.lock().unwrap().contains_key(&device_id) {
         log::warn!(
             "[devices] pipeline already exists for device_id={}",
             device_id
@@ -444,7 +602,7 @@ pub fn spawn_pipeline(pipelines: &PipelineStore, device_id: u32, camera_id: u32)
             match p.start() {
                 Ok(()) => {
                     log::info!("[devices] VideoPipeline::start() ok");
-                    pipelines.borrow_mut().insert(device_id, Rc::new(p));
+                    pipelines.lock().unwrap().insert(device_id, Arc::new(p));
                     log::info!("[devices] pipeline inserted for device_id={}", device_id);
                 }
                 Err(e) => {
@@ -459,7 +617,7 @@ pub fn spawn_pipeline(pipelines: &PipelineStore, device_id: u32, camera_id: u32)
 }
 
 pub fn despawn_pipeline(pipelines: &PipelineStore, device_id: u32) {
-    pipelines.borrow_mut().remove(&device_id);
+    pipelines.lock().unwrap().remove(&device_id);
 }
 
 pub fn update_camera_selection(
@@ -480,7 +638,7 @@ pub fn update_camera_selection(
 
     if changed {
         save_devices(&store.borrow());
-        if let Some(p) = pipelines.borrow().get(&device_id) {
+        if let Some(p) = pipelines.lock().unwrap().get(&device_id) {
             p.switch_camera(camera_id);
         }
     }
@@ -549,7 +707,7 @@ pub fn transform_callbacks_for(
     pipelines: &PipelineStore,
     device_id: u32,
 ) -> Option<crate::ui::TransformCallbacks> {
-    let p = pipelines.borrow().get(&device_id)?.clone();
+    let p = pipelines.lock().unwrap().get(&device_id)?.clone();
     Some(crate::ui::TransformCallbacks {
         on_rotation: Rc::new({
             let p = p.clone();

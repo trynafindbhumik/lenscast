@@ -55,7 +55,9 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
 
     std::thread::spawn(move || match service.wait_for_pairing() {
         Ok(device) => {
-            match crate::adb::pair_service::PairService::execute_pair_and_connect(&device, &password) {
+            match crate::adb::pair_service::PairService::execute_pair_and_connect(
+                &device, &password,
+            ) {
                 Ok(info) => {
                     let _ = tx.try_send(PairEvent::PairSuccess(
                         info.address.to_string(),
@@ -161,15 +163,12 @@ fn run_adb_pair_manual(
                                 // Query adb devices to get the actual debug port after pairing,
                                 // instead of returning the pairing port the user entered.
                                 if let Some((real_ip, real_port)) = query_debug_port(&ip_clone) {
-                                    let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
-                                        real_ip, real_port,
-                                    ));
+                                    let _ = event_tx_reader
+                                        .try_send(PairEvent::PairSuccess(real_ip, real_port));
                                 } else {
                                     // Fallback: assume default wireless debug port 5555
-                                    let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
-                                        ip_clone.clone(),
-                                        5555,
-                                    ));
+                                    let _ = event_tx_reader
+                                        .try_send(PairEvent::PairSuccess(ip_clone.clone(), 5555));
                                 }
                             }
                             if lower.contains("error:")
@@ -204,14 +203,11 @@ fn run_adb_pair_manual(
                             {
                                 found_success = true;
                                 if let Some((real_ip, real_port)) = query_debug_port(&ip_clone) {
-                                    let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
-                                        real_ip, real_port,
-                                    ));
+                                    let _ = event_tx_reader
+                                        .try_send(PairEvent::PairSuccess(real_ip, real_port));
                                 } else {
-                                    let _ = event_tx_reader.try_send(PairEvent::PairSuccess(
-                                        ip_clone.clone(),
-                                        5555,
-                                    ));
+                                    let _ = event_tx_reader
+                                        .try_send(PairEvent::PairSuccess(ip_clone.clone(), 5555));
                                 }
                             }
                             if lower.contains("error:")

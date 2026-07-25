@@ -1,11 +1,10 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use super::VideoPipeline;
 
-pub type PipelineStore = Rc<RefCell<HashMap<u32, Rc<VideoPipeline>>>>;
+pub type PipelineStore = Arc<Mutex<HashMap<u32, Arc<VideoPipeline>>>>;
 
 pub fn new_pipeline_store() -> PipelineStore {
-    Rc::new(RefCell::new(HashMap::new()))
+    Arc::new(Mutex::new(HashMap::new()))
 }

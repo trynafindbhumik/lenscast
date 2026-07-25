@@ -3,6 +3,7 @@ use gtk::{Label, Orientation};
 use std::cell::RefCell;
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 use crate::ui::devices::{save_devices, Device, DeviceStore};
 use crate::video::PipelineStore;
@@ -23,6 +24,7 @@ pub(crate) struct DeviceListContext {
     pub pipelines: PipelineStore,
     pub selected_id: Rc<RefCell<Option<u32>>>,
     pub on_deselect_fn: Rc<dyn Fn()>,
+    pub content_area: gtk::Box,
 }
 
 /// Returns (sidebar_box, device_listbox, selected_device_id_cell).
@@ -230,6 +232,8 @@ fn build_device_popover(
         let conn_indicator = connected_indicator.clone();
         let on_select = ctx.on_select.clone();
         let selected_id = ctx.selected_id.clone();
+        let content_area = ctx.content_area.clone();
+        let device_name_for_connect = device.name.clone();
 
         connect_btn.connect_clicked(move |_| {
             p.popdown();
@@ -240,47 +244,116 @@ fn build_device_popover(
                 is_connected
             );
 
-            let (success, device_name) = if is_connected {
-                crate::ui::devices::try_disconnect_device(&store, &pipelines, device_id)
-            } else {
-                crate::ui::devices::try_connect_device(&store, &pipelines, device_id)
-            };
+            if is_connected {
+                let (success, device_name) =
+                    crate::ui::devices::try_disconnect_device(&store, &pipelines, device_id);
 
-            log::info!(
-                "[sidebar] connect result: success={} device={}",
-                success,
-                device_name
-            );
+                log::info!(
+                    "[sidebar] disconnect result: success={} device={}",
+                    success,
+                    device_name
+                );
 
-            if success {
-                conn_indicator.set_visible(!is_connected);
-                let title = if is_connected {
-                    format!("Disconnected from {}", device_name)
+                if success {
+                    conn_indicator.set_visible(false);
+                    let t = adw::Toast::builder()
+                        .title(format!("Disconnected from {}", device_name))
+                        .timeout(3)
+                        .build();
+                    t.set_priority(adw::ToastPriority::Normal);
+                    toast_overlay.add_toast(t);
+
+                    if *selected_id.borrow() == Some(device_id) {
+                        on_select(Some(device_id));
+                    }
                 } else {
-                    format!("Connected to {}", device_name)
-                };
-                let t = adw::Toast::builder().title(title).timeout(3).build();
-                t.set_priority(adw::ToastPriority::Normal);
-                toast_overlay.add_toast(t);
-
-                if *selected_id.borrow() == Some(device_id) {
-                    on_select(Some(device_id));
+                    let t = adw::Toast::builder()
+                        .title(format!("Failed to disconnect from {}", device_name))
+                        .timeout(3)
+                        .build();
+                    t.set_priority(adw::ToastPriority::Normal);
+                    toast_overlay.add_toast(t);
                 }
+                refresh();
             } else {
-                let action = if is_connected {
-                    "disconnect from"
-                } else {
-                    "connect to"
-                };
-                let t = adw::Toast::builder()
-                    .title(format!("Failed to {} {}", action, device_name))
-                    .timeout(3)
-                    .build();
-                t.set_priority(adw::ToastPriority::Normal);
-                toast_overlay.add_toast(t);
-            }
+                let device_name = device_name_for_connect.clone();
+                let device_id_for_connect = device_id;
 
-            refresh();
+                // Show connecting state immediately
+                crate::ui::show_connecting_state(&content_area, &device_name);
+
+                // Flush GTK events so spinner actually renders before blocking call
+                while gtk::glib::MainContext::default().iteration(false) {}
+
+                // Run connect + pipeline spawn in a thread, send raw results back via channel
+                let (tx, rx) = mpsc::channel();
+                crate::ui::devices::try_connect_device_background(
+                    &store,
+                    pipelines.clone(),
+                    device_id,
+                    tx,
+                );
+
+                // Poll channel on main thread with timeout
+                let toast_overlay_clone = toast_overlay.clone();
+                let on_select_clone = on_select.clone();
+                let selected_id_clone = selected_id.clone();
+                let refresh_clone = refresh.clone();
+                let store_for_result = store.clone();
+
+                gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                    if let Ok((success, device_name, mdns_update)) = rx.try_recv() {
+                        log::info!(
+                            "[sidebar] connect result: success={} device={}",
+                            success,
+                            device_name
+                        );
+
+                        // Apply result to store on main thread (non-blocking, pipeline already spawned in thread)
+                        crate::ui::devices::apply_connect_result(
+                            &store_for_result,
+                            device_id_for_connect,
+                            success,
+                            &device_name,
+                            mdns_update,
+                        );
+
+                        if success {
+                            let t = adw::Toast::builder()
+                                .title(format!("Connected to {}", device_name))
+                                .timeout(3)
+                                .build();
+                            t.set_priority(adw::ToastPriority::Normal);
+                            toast_overlay_clone.add_toast(t);
+
+                            // Trigger UI refresh to show connected state
+                            let on_sel = on_select_clone.clone();
+                            let sel_id = selected_id_clone.clone();
+                            let dev_id = device_id_for_connect;
+                            gtk::glib::timeout_add_local(
+                                std::time::Duration::from_millis(100),
+                                move || {
+                                    if *sel_id.borrow() == Some(dev_id) {
+                                        on_sel(Some(dev_id));
+                                    }
+                                    glib::ControlFlow::Break
+                                },
+                            );
+                        } else {
+                            let t = adw::Toast::builder()
+                                .title(format!("Failed to connect to {}", device_name))
+                                .timeout(3)
+                                .build();
+                            t.set_priority(adw::ToastPriority::Normal);
+                            toast_overlay_clone.add_toast(t);
+                            refresh_clone();
+                        }
+                        glib::ControlFlow::Break
+                    } else {
+                        glib::ControlFlow::Continue
+                    }
+                });
+            }
         });
     }
     vbox.append(&connect_btn);

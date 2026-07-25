@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Button, Image, Label, Orientation};
+use gtk::{Box as GtkBox, Button, Image, Label, Orientation, Spinner};
 use std::rc::Rc;
 
 /// Creates the main content area shown when no device is selected.
@@ -173,4 +173,51 @@ pub fn reset_content_to_welcome(content_area: &gtk::Box) {
     welcome.set_halign(gtk::Align::Center);
     welcome.set_valign(gtk::Align::Center);
     content_area.append(&welcome);
+}
+
+/// Shows a loading spinner with "Connecting to {device_name}..." text
+pub fn show_connecting_state(content_area: &gtk::Box, device_name: &str) {
+    log::info!(
+        "[content] show_connecting_state called for device: {}",
+        device_name
+    );
+
+    while let Some(child) = content_area.first_child() {
+        log::info!("[content] removing child from content_area");
+        content_area.remove(&child);
+    }
+
+    log::info!("[content] creating loading UI");
+
+    let vbox = GtkBox::builder()
+        .orientation(Orientation::Vertical)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .spacing(24)
+        .build();
+
+    let spinner = Spinner::new();
+    spinner.set_size_request(48, 48);
+    spinner.set_halign(gtk::Align::Center);
+    spinner.set_valign(gtk::Align::Center);
+    spinner.start();
+    log::info!("[content] spinner created and started");
+
+    let label = Label::new(None);
+    label.set_markup(&format!(
+        "<b><big>Connecting to {}...</big></b>\n\nPlease wait while we establish the connection",
+        device_name
+    ));
+    label.add_css_class("dim-label");
+    label.set_justify(gtk::Justification::Center);
+    label.set_halign(gtk::Align::Center);
+    label.set_valign(gtk::Align::Center);
+
+    vbox.append(&spinner);
+    vbox.append(&label);
+
+    log::info!("[content] appending vbox to content_area");
+    content_area.append(&vbox);
+    log::info!("[content] loading state UI appended, forcing queue_draw");
+    content_area.queue_draw();
 }
