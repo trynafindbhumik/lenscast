@@ -442,6 +442,7 @@ fn probe_device_connect(address: &str, port: u16) -> (bool, String, u16, Option<
 
 /// Connects a device - ADB calls and pipeline spawn run in thread.
 /// Sends (is_connected, device_name, mdns_update) through channel when done.
+#[allow(clippy::type_complexity)]
 pub fn try_connect_device_background(
     store: &DeviceStore,
     pipelines: PipelineStore,

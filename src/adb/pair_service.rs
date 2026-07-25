@@ -126,7 +126,6 @@ impl PairService {
         })
     }
 
-    #[allow(dead_code)]
     pub fn discover_device_for_connect() -> Result<DeviceInfo, Box<dyn std::error::Error>> {
         let mdns = ServiceDaemon::new()?;
         let receiver = mdns.browse(SERVICE_TYPE_CONNECT)?;
@@ -183,7 +182,6 @@ impl PairService {
         Ok(device.clone())
     }
 
-    #[allow(dead_code)]
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,

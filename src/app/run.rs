@@ -305,6 +305,21 @@ pub fn run() {
                         if let Some(device) = devices.iter().find(|d| d.id == id) {
                             // If pipeline exists for this device, treat as connected regardless of ADB state
                             let has_pipeline = refresh_pipelines.lock().unwrap().contains_key(&id);
+
+                            // Guard: ADB reports connected but the pipeline is not in the store yet.
+                            // This means spawn_pipeline is still running in the background thread
+                            // (scrcpy + GStreamer relay init takes 3-10 s). Do NOT touch the content
+                            // area — the loading spinner is already showing and we must not replace
+                            // it with a half-connected view that has no transform controls.
+                            if device.connected && !has_pipeline {
+                                log::info!(
+                                    "[run] periodic timer: device_id={} ADB connected but pipeline \
+                                     not ready yet — skipping content update (connection in progress)",
+                                    id
+                                );
+                                return gtk::glib::ControlFlow::Continue;
+                            }
+
                             let effective_connected = device.connected || has_pipeline;
                             log::info!("[run] periodic timer: device_id={} connected={} has_pipeline={} effective={}",
                                 id, device.connected, has_pipeline, effective_connected);
@@ -426,7 +441,13 @@ pub fn run() {
             let (tx, rx) = async_channel::unbounded::<crate::tray::TrayMessage>();
             let tray = LensCastTray::new(tx);
 
-            start_tray_message_handler(app.clone(), window_ref.clone(), device_store.clone(), rx);
+            start_tray_message_handler(
+                app.clone(),
+                window_ref.clone(),
+                device_store.clone(),
+                pipelines.clone(),
+                rx,
+            );
 
             std::thread::spawn(move || {
                 let rt = match tokio::runtime::Runtime::new() {
