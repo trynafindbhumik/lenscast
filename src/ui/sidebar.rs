@@ -64,7 +64,6 @@ pub fn create_sidebar() -> (gtk::Box, gtk::ListBox, Rc<RefCell<Option<u32>>>) {
 
 /// Repopulates the device list after add/edit/delete.
 pub fn rebuild_device_list(ctx: &DeviceListContext) {
-    // First clear all existing children
     while let Some(child) = ctx.listbox.first_child() {
         ctx.listbox.remove(&child);
     }

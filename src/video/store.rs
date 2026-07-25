@@ -9,6 +9,7 @@ pub fn new_pipeline_store() -> PipelineStore {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
+#[allow(dead_code)]
 /// Stop and remove all pipelines. Call this during shutdown.
 pub fn stop_all_pipelines(store: &PipelineStore) {
     let mut pipelines = store.lock().unwrap();

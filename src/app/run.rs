@@ -48,7 +48,7 @@ pub fn run() {
         hold_guards_clone.borrow_mut().push(app.hold());
 
         let device_store = new_device_store();
-        let pipelines = new_pipeline_store(); // NEW — device_id -> VideoPipeline
+        let pipelines = new_pipeline_store();
         refresh_connected_status(&device_store);
 
         let add_device_btn = ui::create_add_device_button();
@@ -120,14 +120,22 @@ pub fn run() {
                                 let device_name_for_connect = device_name.clone();
 
                                 Rc::new(move || {
-                                    ui::show_connecting_state(&content_area, &device_name_for_connect);
+                                    ui::show_connecting_state(
+                                        &content_area,
+                                        &device_name_for_connect,
+                                    );
 
                                     // Flush GTK events so spinner actually renders
                                     while gtk::glib::MainContext::default().iteration(false) {}
 
                                     // Run connect in a thread, send raw results back via channel
                                     let (tx, rx) = std::sync::mpsc::channel();
-                                    ui::devices::try_connect_device_background(&store, pipelines.clone(), id, tx);
+                                    ui::devices::try_connect_device_background(
+                                        &store,
+                                        pipelines.clone(),
+                                        id,
+                                        tx,
+                                    );
 
                                     // Poll channel on main thread with timeout
                                     let store_clone = store.clone();
@@ -136,65 +144,93 @@ pub fn run() {
                                     let toast_clone = toast.clone();
                                     let refresh_ui_clone = refresh_ui.clone();
                                     let selected_id_clone = selected_id_inner.clone();
-                                    let device_camera_selection_clone = device_camera_selection_for_connect.clone();
+                                    let device_camera_selection_clone =
+                                        device_camera_selection_for_connect.clone();
                                     let device_id = id;
 
-                                    gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-                                        if let Ok((is_connected, device_name, mdns_update)) = rx.try_recv() {
-                                            // Apply result to store on main thread (non-blocking, pipeline already spawned in thread)
-                                            ui::devices::apply_connect_result(&store_clone, device_id, is_connected, &device_name, mdns_update);
+                                    gtk::glib::timeout_add_local(
+                                        std::time::Duration::from_millis(100),
+                                        move || {
+                                            if let Ok((is_connected, device_name, mdns_update)) =
+                                                rx.try_recv()
+                                            {
+                                                // Apply result to store on main thread (non-blocking, pipeline already spawned in thread)
+                                                ui::devices::apply_connect_result(
+                                                    &store_clone,
+                                                    device_id,
+                                                    is_connected,
+                                                    &device_name,
+                                                    mdns_update,
+                                                );
 
-                                            if is_connected {
-                                                let t = adw::Toast::builder()
-                                                    .title(format!("Connected to {}", device_name))
-                                                    .timeout(3)
-                                                    .build();
-                                                toast_clone.add_toast(t);
+                                                if is_connected {
+                                                    let t = adw::Toast::builder()
+                                                        .title(format!(
+                                                            "Connected to {}",
+                                                            device_name
+                                                        ))
+                                                        .timeout(3)
+                                                        .build();
+                                                    toast_clone.add_toast(t);
 
-                                                if *selected_id_clone.borrow() == Some(device_id) {
-                                                    // Pipeline already spawned in background thread, show connected UI
-                                                    let content_area_d = content_area_clone.clone();
-                                                    let device_name_d = device_name.clone();
-                                                    let pipelines_d = pipelines_clone.clone();
-                                                    let camera_sel_d = device_camera_selection_clone.clone();
-                                                    let refresh_ui_d = refresh_ui_clone.clone();
+                                                    if *selected_id_clone.borrow()
+                                                        == Some(device_id)
+                                                    {
+                                                        // Pipeline already spawned in background thread, show connected UI
+                                                        let content_area_d =
+                                                            content_area_clone.clone();
+                                                        let device_name_d = device_name.clone();
+                                                        let pipelines_d = pipelines_clone.clone();
+                                                        let camera_sel_d =
+                                                            device_camera_selection_clone.clone();
+                                                        let refresh_ui_d = refresh_ui_clone.clone();
 
-                                                    let camera_change_fn: Rc<dyn Fn(String)> = {
-                                                        let store = store_clone.clone();
-                                                        let pipelines = pipelines_d.clone();
-                                                        let refresh_ui = refresh_ui_d.clone();
-                                                        Rc::new(move |selection| {
-                                                            if update_camera_selection(&store, &pipelines, device_id, &selection) {
-                                                                refresh_ui();
-                                                            }
-                                                        })
-                                                    };
+                                                        let camera_change_fn: Rc<dyn Fn(String)> = {
+                                                            let store = store_clone.clone();
+                                                            let pipelines = pipelines_d.clone();
+                                                            let refresh_ui = refresh_ui_d.clone();
+                                                            Rc::new(move |selection| {
+                                                                if update_camera_selection(
+                                                                    &store, &pipelines, device_id,
+                                                                    &selection,
+                                                                ) {
+                                                                    refresh_ui();
+                                                                }
+                                                            })
+                                                        };
 
-                                                    ui::update_content_for_device(
-                                                        &content_area_d,
-                                                        &device_name_d,
-                                                        true,
-                                                        Rc::new(|| {}),
-                                                        transform_callbacks_for(&pipelines_d, device_id),
-                                                        Some(camera_change_fn),
-                                                        Some(camera_sel_d.clone()),
-                                                    );
-                                                    refresh_ui_d();
+                                                        ui::update_content_for_device(
+                                                            &content_area_d,
+                                                            &device_name_d,
+                                                            true,
+                                                            Rc::new(|| {}),
+                                                            transform_callbacks_for(
+                                                                &pipelines_d,
+                                                                device_id,
+                                                            ),
+                                                            Some(camera_change_fn),
+                                                            Some(camera_sel_d.clone()),
+                                                        );
+                                                        refresh_ui_d();
+                                                    }
+                                                    glib::ControlFlow::Break
+                                                } else {
+                                                    let t = adw::Toast::builder()
+                                                        .title(format!(
+                                                            "Failed to connect to {}",
+                                                            device_name
+                                                        ))
+                                                        .timeout(3)
+                                                        .build();
+                                                    toast_clone.add_toast(t);
+                                                    refresh_ui_clone();
+                                                    glib::ControlFlow::Break
                                                 }
-                                                glib::ControlFlow::Break
                                             } else {
-                                                let t = adw::Toast::builder()
-                                                    .title(format!("Failed to connect to {}", device_name))
-                                                    .timeout(3)
-                                                    .build();
-                                                toast_clone.add_toast(t);
-                                                refresh_ui_clone();
-                                                glib::ControlFlow::Break
+                                                glib::ControlFlow::Continue
                                             }
-                                        } else {
-                                            glib::ControlFlow::Continue
-                                        }
-                                    });
+                                        },
+                                    );
                                 })
                             };
 
@@ -294,90 +330,83 @@ pub fn run() {
             Duration::from_secs(5),
             move || {
                 let status_changed = refresh_connected_status(&refresh_store);
-                log::info!("[run] periodic timer: status_changed={}", status_changed);
-                if status_changed {
-                    if let Some(r) = refresh_h.borrow().as_ref() {
-                        r();
-                    }
+                if !status_changed {
+                    return gtk::glib::ControlFlow::Continue;
+                }
 
-                    if let Some(id) = *selected_device_id.borrow() {
-                        let devices = refresh_store.borrow();
-                        if let Some(device) = devices.iter().find(|d| d.id == id) {
-                            // If pipeline exists for this device, treat as connected regardless of ADB state
-                            let has_pipeline = refresh_pipelines.lock().unwrap().contains_key(&id);
+                if let Some(r) = refresh_h.borrow().as_ref() {
+                    r();
+                }
 
-                            // Guard: ADB reports connected but the pipeline is not in the store yet.
-                            // This means spawn_pipeline is still running in the background thread
-                            // (scrcpy + GStreamer relay init takes 3-10 s). Do NOT touch the content
-                            // area — the loading spinner is already showing and we must not replace
-                            // it with a half-connected view that has no transform controls.
-                            if device.connected && !has_pipeline {
-                                log::info!(
-                                    "[run] periodic timer: device_id={} ADB connected but pipeline \
-                                     not ready yet — skipping content update (connection in progress)",
-                                    id
-                                );
-                                return gtk::glib::ControlFlow::Continue;
-                            }
+                if let Some(id) = *selected_device_id.borrow() {
+                    let devices = refresh_store.borrow();
+                    if let Some(device) = devices.iter().find(|d| d.id == id) {
+                        let has_pipeline = refresh_pipelines.lock().unwrap().contains_key(&id);
 
-                            let effective_connected = device.connected || has_pipeline;
-                            log::info!("[run] periodic timer: device_id={} connected={} has_pipeline={} effective={}",
-                                id, device.connected, has_pipeline, effective_connected);
-                            let device_camera_selection = device.camera_selection.clone();
-                            let connect_fn: Rc<dyn Fn()> = {
-                                let store = refresh_store.clone();
-                                let pipelines = refresh_pipelines.clone();
-                                let toast = refresh_toast.clone();
-                                let rh = refresh_h.clone();
+                        // Guard: ADB reports connected but the pipeline is not in the store yet.
+                        // This means spawn_pipeline is still running in the background thread
+                        // (scrcpy + GStreamer relay init takes 3-10 s). Do NOT touch the content
+                        // area — the loading spinner is already showing and we must not replace
+                        // it with a half-connected view that has no transform controls.
+                        if device.connected && !has_pipeline {
+                            return gtk::glib::ControlFlow::Continue;
+                        }
 
-                                Rc::new(move || {
-                                    let (is_connected, device_name) =
-                                        try_connect_device(&store, &pipelines, id);
+                        let effective_connected = device.connected || has_pipeline;
+                        let device_camera_selection = device.camera_selection.clone();
+                        let connect_fn: Rc<dyn Fn()> = {
+                            let store = refresh_store.clone();
+                            let pipelines = refresh_pipelines.clone();
+                            let toast = refresh_toast.clone();
+                            let rh = refresh_h.clone();
 
-                                    let t = if is_connected {
-                                        adw::Toast::builder()
-                                            .title(format!("Connected to {}", device_name))
-                                            .timeout(3)
-                                            .build()
-                                    } else {
-                                        adw::Toast::builder()
-                                            .title(format!("Failed to connect to {}", device_name))
-                                            .timeout(3)
-                                            .build()
-                                    };
-                                    toast.add_toast(t);
+                            Rc::new(move || {
+                                let (is_connected, device_name) =
+                                    try_connect_device(&store, &pipelines, id);
 
+                                let t = if is_connected {
+                                    adw::Toast::builder()
+                                        .title(format!("Connected to {}", device_name))
+                                        .timeout(3)
+                                        .build()
+                                } else {
+                                    adw::Toast::builder()
+                                        .title(format!("Failed to connect to {}", device_name))
+                                        .timeout(3)
+                                        .build()
+                                };
+                                toast.add_toast(t);
+
+                                if let Some(r) = rh.borrow().clone() {
+                                    r();
+                                }
+                            })
+                        };
+                        let camera_change_fn: Rc<dyn Fn(String)> = {
+                            let store = refresh_store.clone();
+                            let pipelines = refresh_pipelines.clone();
+                            let rh = refresh_h.clone();
+                            Rc::new(move |selection| {
+                                if update_camera_selection(&store, &pipelines, id, &selection) {
                                     if let Some(r) = rh.borrow().clone() {
                                         r();
                                     }
-                                })
-                            };
-                            let camera_change_fn: Rc<dyn Fn(String)> = {
-                                let store = refresh_store.clone();
-                                let pipelines = refresh_pipelines.clone();
-                                let rh = refresh_h.clone();
-                                Rc::new(move |selection| {
-                                    if update_camera_selection(&store, &pipelines, id, &selection) {
-                                        if let Some(r) = rh.borrow().clone() {
-                                            r();
-                                        }
-                                    }
-                                })
-                            };
+                                }
+                            })
+                        };
 
-                            ui::update_content_for_device(
-                                &content_area_for_timer,
-                                &device.name,
-                                effective_connected,
-                                connect_fn,
-                                transform_callbacks_for(&refresh_pipelines, id),
-                                Some(camera_change_fn),
-                                Some(device_camera_selection.clone()),
-                            );
-                        } else {
-                            *selected_device_id.borrow_mut() = None;
-                            ui::reset_content_to_welcome(&content_area_for_timer);
-                        }
+                        ui::update_content_for_device(
+                            &content_area_for_timer,
+                            &device.name,
+                            effective_connected,
+                            connect_fn,
+                            transform_callbacks_for(&refresh_pipelines, id),
+                            Some(camera_change_fn),
+                            Some(device_camera_selection.clone()),
+                        );
+                    } else {
+                        *selected_device_id.borrow_mut() = None;
+                        ui::reset_content_to_welcome(&content_area_for_timer);
                     }
                 }
                 gtk::glib::ControlFlow::Continue
@@ -407,7 +436,6 @@ pub fn run() {
                         };
                         store.borrow_mut().push(device.clone());
                         save_devices(&store.borrow());
-                        refresh_connected_status(&store);
                         refresh();
 
                         let t = adw::Toast::builder()

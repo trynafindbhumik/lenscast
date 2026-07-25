@@ -10,7 +10,6 @@ pub fn create_content_area() -> (gtk::Box, gtk::Box) {
         .hexpand(true)
         .build();
 
-    // Content area that changes based on selection
     let content_area = gtk::Box::builder()
         .orientation(Orientation::Vertical)
         .halign(gtk::Align::Center)
@@ -44,13 +43,11 @@ pub fn update_content_for_device(
     on_camera_changed: Option<Rc<dyn Fn(String)>>,
     current_camera_selection: Option<String>,
 ) {
-    // Clear existing children
     while let Some(child) = content_area.first_child() {
         content_area.remove(&child);
     }
 
     if is_connected {
-        // Show hello message when connected
         let icon = Image::from_icon_name("emblem-ok-symbolic");
         icon.set_pixel_size(64);
         icon.add_css_class("success-icon");
@@ -112,7 +109,6 @@ pub fn update_content_for_device(
 
         content_area.append(&vbox);
     } else {
-        // Show disconnect image and connect button
         let icon = Image::from_icon_name("network-wireless-symbolic");
         icon.set_pixel_size(80);
         icon.add_css_class("disconnected-icon");
@@ -177,17 +173,9 @@ pub fn reset_content_to_welcome(content_area: &gtk::Box) {
 
 /// Shows a loading spinner with "Connecting to {device_name}..." text
 pub fn show_connecting_state(content_area: &gtk::Box, device_name: &str) {
-    log::info!(
-        "[content] show_connecting_state called for device: {}",
-        device_name
-    );
-
     while let Some(child) = content_area.first_child() {
-        log::info!("[content] removing child from content_area");
         content_area.remove(&child);
     }
-
-    log::info!("[content] creating loading UI");
 
     let vbox = GtkBox::builder()
         .orientation(Orientation::Vertical)
@@ -201,7 +189,6 @@ pub fn show_connecting_state(content_area: &gtk::Box, device_name: &str) {
     spinner.set_halign(gtk::Align::Center);
     spinner.set_valign(gtk::Align::Center);
     spinner.start();
-    log::info!("[content] spinner created and started");
 
     let label = Label::new(None);
     label.set_markup(&format!(
@@ -216,8 +203,6 @@ pub fn show_connecting_state(content_area: &gtk::Box, device_name: &str) {
     vbox.append(&spinner);
     vbox.append(&label);
 
-    log::info!("[content] appending vbox to content_area");
     content_area.append(&vbox);
-    log::info!("[content] loading state UI appended, forcing queue_draw");
     content_area.queue_draw();
 }

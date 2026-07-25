@@ -81,12 +81,8 @@ pub fn start_tray_message_handler(
                     // We call stop() before clearing the store because other Arc clones
                     // held by closures in run.rs keep the refcount above 1, so
                     // clearing the store alone would NOT trigger Drop on the pipeline.
-                    let pipelines_to_stop: Vec<_> = pipeline_store
-                        .lock()
-                        .unwrap()
-                        .values()
-                        .cloned()
-                        .collect();
+                    let pipelines_to_stop: Vec<_> =
+                        pipeline_store.lock().unwrap().values().cloned().collect();
 
                     for pipeline in &pipelines_to_stop {
                         log::info!("[tray] stopping pipeline before quit");

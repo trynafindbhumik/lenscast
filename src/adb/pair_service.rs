@@ -161,6 +161,7 @@ impl PairService {
         }
     }
 
+    #[allow(dead_code)]
     /// Pairs with device (QR flow — no connect).
     pub fn execute_pair_only(device: &DeviceInfo, password: &str) -> Result<DeviceInfo, String> {
         let pair_output = Command::new("adb")
@@ -182,6 +183,7 @@ impl PairService {
         Ok(device.clone())
     }
 
+    #[allow(dead_code)]
     pub fn execute_pair_and_connect(
         device: &DeviceInfo,
         password: &str,

@@ -55,13 +55,12 @@ fn run_native_pairing_qr(event_tx: async_channel::Sender<PairEvent>) {
 
     std::thread::spawn(move || match service.wait_for_pairing() {
         Ok(device) => {
-            match crate::adb::pair_service::PairService::execute_pair_and_connect(
-                &device, &password,
-            ) {
-                Ok(info) => {
+            match crate::adb::pair_service::PairService::execute_pair_only(&device, &password) {
+                Ok(_) => {
+                    // Pair only — connect happens only via Connect button
                     let _ = tx.try_send(PairEvent::PairSuccess(
-                        info.address.to_string(),
-                        info.debugging_port,
+                        device.address.to_string(),
+                        device.debugging_port,
                     ));
                 }
                 Err(e) => {

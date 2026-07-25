@@ -107,40 +107,17 @@ pub fn refresh_connected_status(store: &DeviceStore) -> bool {
     changed
 }
 
-// FIX: Two v4l2loopback devices instead of one.
-//
-// Old architecture (broken for camera switching):
-//   scrcpy → /dev/video7 ← Chrome
-//   A plain open() "dummy writer" held the fd but never called VIDIOC_STREAMON,
-//   so v4l2loopback saw 0 active streaming writers when scrcpy was killed and
-//   stopped emitting frames, causing Chrome to drop the MediaStreamTrack.
-//
-// New architecture (seamless switching):
-//   scrcpy → /dev/video8 → [GStreamer relay] → /dev/video7 ← Chrome
-//
-//   • /dev/video8  (LensCast_Src)  — intermediate; scrcpy writes here.
-//   • /dev/video7  (LensCast)      — Chrome-facing; relay writes here.
-//
-//   The relay is a real VIDIOC_STREAMON writer of /dev/video7 that never
-//   stops during camera switching.  While scrcpy is down, /dev/video8's
-//   sustain_framerate=1 repeats the last frame; the relay forwards it to
-//   /dev/video7 so Chrome always has live frames and never drops the track.
+// Two v4l2loopback devices: /dev/video7 (Chrome) and /dev/video8 (scrcpy/relay).
+// scrcpy → /dev/video8 → [GStreamer relay] → /dev/video7 ← Chrome
+// sustain_framerate=1 keeps frames flowing while scrcpy restarts during camera switch.
 fn loopback_modprobe_args() -> Vec<String> {
     vec![
         "modprobe".to_string(),
         "v4l2loopback".to_string(),
-        // Two devices: /dev/video7 (Chrome) and /dev/video8 (scrcpy/relay)
         "devices=2".to_string(),
         "video_nr=7,8".to_string(),
-        // Per-device labels — comma-separated, same order as video_nr.
-        // The label on /dev/video7 is what Chrome shows in the camera picker.
         "card_label=LensCast,LensCast_Src".to_string(),
-        // exclusive_caps=1 makes /dev/video7 visible to Chrome/WebRTC.
-        // One value applies to both devices.
         "exclusive_caps=1".to_string(),
-        // sustain_framerate=1 causes v4l2loopback to repeat the last frame
-        // when the active writer (scrcpy) stops, bridging the gap until the
-        // relay reads and forwards those repeated frames to /dev/video7.
         "sustain_framerate=1".to_string(),
     ]
 }
@@ -162,10 +139,7 @@ fn loopback_paths(_device_id: u32) -> (String, String) {
         std::path::Path::new(scrcpy_device).exists()
     );
 
-    // Require BOTH loopback devices to exist with exclusive_caps=1.
-    // exclusive_caps is a CSV per-device flag: "Y,Y,N,N,N,N,N,N" for 8 devices.
-    // A value of "1" means ALL devices use exclusive_caps=1.
-    // Any other value (including "Y,N,...") means some devices lack it.
+    // Check both loopback devices exist and exclusive_caps=1
     if !std::path::Path::new(chrome_device).exists()
         || !std::path::Path::new(scrcpy_device).exists()
     {
@@ -174,7 +148,6 @@ fn loopback_paths(_device_id: u32) -> (String, String) {
     } else if let Ok(caps) = std::fs::read_to_string(sys_caps) {
         let caps = caps.trim();
         log::info!("[loopback] exclusive_caps='{}'", caps);
-        // "1" means global exclusive_caps=1; anything else means reload needed.
         if caps != "1" {
             needs_reload = true;
         }
@@ -224,10 +197,7 @@ fn loopback_paths(_device_id: u32) -> (String, String) {
         log::info!("[loopback] devices already configured, skipping reload");
     }
 
-    // Return (scrcpy_device, chrome_device) so that:
-    //   VideoPipeline::new(input_device, output_device, …)
-    //                       ↑ /dev/video8     ↑ /dev/video7
-    // scrcpy writes to input_device; relay bridges input→output; Chrome reads output.
+    // Return (scrcpy_device, chrome_device): scrcpy→/dev/video8, relay→/dev/video7, Chrome reads
     (scrcpy_device.to_string(), chrome_device.to_string())
 }
 
@@ -256,22 +226,14 @@ pub fn try_connect_device(
         return (false, device_name);
     }
 
-    // Try connect with saved port first
     log::info!("[devices] running: adb connect {}", address_str);
-    let connect_out = Command::new("adb").args(["connect", &address_str]).output();
-    log::info!(
-        "[devices] adb connect output: {:?}",
-        connect_out
-            .as_ref()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-    );
+    let _connect_out = Command::new("adb").args(["connect", &address_str]).output();
 
     // Check if saved port worked
     let verify = Command::new("adb").args(["devices"]).output();
     let mut is_connected = match verify {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            log::info!("[devices] adb devices output:\n{}", stdout);
             stdout
                 .lines()
                 .any(|line| line.starts_with(&address_str) && line.contains("device"))
@@ -296,18 +258,10 @@ pub fn try_connect_device(
                 discovered_addr
             );
 
-            let discovered_out = Command::new("adb")
+            let _discovered_out = Command::new("adb")
                 .args(["connect", &discovered_addr])
                 .output();
-            log::info!(
-                "[devices] adb connect {} output: {:?}",
-                discovered_addr,
-                discovered_out
-                    .as_ref()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            );
 
-            // Verify the new connection
             if let Ok(out) = Command::new("adb").args(["devices"]).output() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 is_connected = stdout
@@ -315,7 +269,6 @@ pub fn try_connect_device(
                     .any(|line| line.starts_with(&discovered_addr) && line.contains("device"));
             }
 
-            // Update stored port if mDNS gave us a different one
             if is_connected {
                 log::info!(
                     "[devices] mDNS connect succeeded, updating stored port {} -> {}",
@@ -347,12 +300,7 @@ pub fn try_connect_device(
                 .map(|d| camera_id_for_selection(&d.camera_selection))
                 .unwrap_or(0)
         };
-        log::info!(
-            "[devices] device connected, camera_id={}, calling spawn_pipeline",
-            camera_id
-        );
         spawn_pipeline(pipelines, device_id, camera_id);
-        log::info!("[devices] spawn_pipeline returned");
     }
 
     (is_connected, device_name)
@@ -380,7 +328,6 @@ fn probe_device_connect(address: &str, port: u16) -> (bool, String, u16, Option<
     let mut is_connected = match verify {
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            log::info!("[devices] adb devices output:\n{}", stdout);
             stdout
                 .lines()
                 .any(|line| line.starts_with(&address_str) && line.contains("device"))
@@ -467,8 +414,7 @@ pub fn try_connect_device_background(
 
     // Run blocking ADB calls AND pipeline spawn in a separate thread
     std::thread::spawn(move || {
-        let (is_connected, _address_str, _port, mdns_update) =
-            probe_device_connect(&address, port);
+        let (is_connected, _address_str, _port, mdns_update) = probe_device_connect(&address, port);
 
         if is_connected {
             log::info!(
@@ -551,7 +497,6 @@ pub fn try_disconnect_device(
             let still = stdout
                 .lines()
                 .any(|line| line.starts_with(&address) && line.contains("device"));
-            log::info!("[devices] is_still_connected={}", still);
             still
         }
         Err(e) => {
@@ -562,14 +507,11 @@ pub fn try_disconnect_device(
 
     let success = !is_still_connected;
     if success {
-        log::info!("[devices] disconnect success, updating store and stopping pipeline");
         if let Some(d) = store.borrow_mut().iter_mut().find(|d| d.id == device_id) {
             d.connected = false;
         }
         save_devices(&store.borrow());
-        log::info!("[devices] calling despawn_pipeline");
         despawn_pipeline(pipelines, device_id);
-        log::info!("[devices] despawn_pipeline returned");
     }
 
     (success, device_name)
@@ -591,26 +533,16 @@ pub fn spawn_pipeline(pipelines: &PipelineStore, device_id: u32, camera_id: u32)
     );
 
     let (input_device, output_device) = loopback_paths(device_id);
-    log::info!(
-        "[devices] loopback_paths: input={} output={}",
-        input_device,
-        output_device
-    );
 
     match VideoPipeline::new(&input_device, &output_device, camera_id) {
-        Ok(p) => {
-            log::info!("[devices] VideoPipeline::new ok, calling start()");
-            match p.start() {
-                Ok(()) => {
-                    log::info!("[devices] VideoPipeline::start() ok");
-                    pipelines.lock().unwrap().insert(device_id, Arc::new(p));
-                    log::info!("[devices] pipeline inserted for device_id={}", device_id);
-                }
-                Err(e) => {
-                    log::error!("[devices] VideoPipeline::start() FAILED: {}", e);
-                }
+        Ok(p) => match p.start() {
+            Ok(()) => {
+                pipelines.lock().unwrap().insert(device_id, Arc::new(p));
             }
-        }
+            Err(e) => {
+                log::error!("[devices] VideoPipeline::start() FAILED: {}", e);
+            }
+        },
         Err(e) => {
             log::error!("[devices] VideoPipeline::new FAILED: {}", e);
         }
