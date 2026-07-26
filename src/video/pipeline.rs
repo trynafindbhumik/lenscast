@@ -1,4 +1,10 @@
-// scrcpy → /dev/video8 → [gst relay] → /dev/video7 ← Chrome
+// scrcpy + v4l2loopback + GStreamer relay video pipeline.
+//
+// scrcpy → /dev/video8 → [gst relay: v4l2src→v4l2sink] → /dev/video7 ← Chrome
+//
+// v4l2loopback sustain_framerate=1 repeats the last frame on /dev/video8 while
+// scrcpy is killed during camera switches. The relay forwards it to /dev/video7
+// so Chrome's MediaStreamTrack never ends.
 
 use super::types::Rotation;
 use std::process::{Child, Command, Stdio};
@@ -12,9 +18,7 @@ pub fn camera_id_for_selection(selection: &str) -> u32 {
     }
 }
 
-/// Returns scrcpy arguments for camera capture with v4l2sink output.
-/// scrcpy writes to the intermediate device (/dev/video8); the relay forwards
-/// frames to the Chrome-facing device (/dev/video7).
+/// scrcpy arguments for camera capture → v4l2sink at `/dev/video8`.
 pub fn scrcpy_command_args(sink_device: &str, camera_id: u32) -> Vec<String> {
     vec![
         "--video-source=camera".to_string(),
@@ -29,7 +33,9 @@ pub fn scrcpy_command_args(sink_device: &str, camera_id: u32) -> Vec<String> {
     ]
 }
 
-// Transform order: rotation → h_flip → v_flip.
+/// Builds GStreamer relay pipeline args with optional videoflip transforms.
+/// Order: rotation → h-flip → v-flip.
+/// 90°/270° rotations add videoscale+capfilter to preserve output resolution.
 fn build_relay_args(
     input_device: &str,
     output_device: &str,
@@ -64,6 +70,20 @@ fn build_relay_args(
         args.push("!".to_string());
     }
 
+    // 90°/270° rotations transpose dimensions (1280x720 → 720x1280).
+    // Browser negotiates fixed 1280x720 — restart with different caps drops camera.
+    // videoscale+capfilter force 1280x720 with letterboxing. No-op for 180°/flips.
+    if matches!(rotation, Rotation::Rot90 | Rotation::Rot270) {
+        args.push("videoscale".to_string());
+        args.push("add-borders=true".to_string());
+        args.push("!".to_string());
+        // Must match the resolution scrcpy is configured with (--camera-size=1280x720).
+        args.push("video/x-raw,width=1280,height=720".to_string());
+        args.push("!".to_string());
+        args.push("videoconvert".to_string());
+        args.push("!".to_string());
+    }
+
     args.push("v4l2sink".to_string());
     args.push(format!("device={}", output_device));
     args.push("sync=false".to_string());
@@ -71,7 +91,7 @@ fn build_relay_args(
     args
 }
 
-// Keeps /dev/video7 fed via relay (sink→output). sustain_framerate=1 handles scrcpy gaps.
+/// Spawns GStreamer relay (v4l2src → v4l2sink) with current transform settings.
 fn start_relay_process(
     input_device: &str,
     output_device: &str,
@@ -120,38 +140,80 @@ mod tests {
 
     #[test]
     fn relay_args_h_flip_only() {
-        let args = build_relay_args(
-            "/dev/video8",
-            "/dev/video7",
-            Rotation::Original,
-            true,
-            false,
-        );
+        let args =
+            build_relay_args("/dev/video8", "/dev/video7", Rotation::Original, true, false);
         assert!(args.iter().any(|a| a == "method=horizontal-flip"));
         assert!(!args.iter().any(|a| a == "method=vertical-flip"));
     }
 
     #[test]
     fn relay_args_v_flip_only() {
-        let args = build_relay_args(
-            "/dev/video8",
-            "/dev/video7",
-            Rotation::Original,
-            false,
-            true,
-        );
+        let args =
+            build_relay_args("/dev/video8", "/dev/video7", Rotation::Original, false, true);
         assert!(args.iter().any(|a| a == "method=vertical-flip"));
         assert!(!args.iter().any(|a| a == "method=horizontal-flip"));
     }
 
     #[test]
     fn relay_args_rotation_plus_both_flips_has_three_videoflip_elements() {
-        let args = build_relay_args("/dev/video8", "/dev/video7", Rotation::Rot180, true, true);
+        let args =
+            build_relay_args("/dev/video8", "/dev/video7", Rotation::Rot180, true, true);
         let flip_count = args.iter().filter(|a| a.as_str() == "videoflip").count();
         assert_eq!(flip_count, 3);
         assert!(args.iter().any(|a| a == "method=rotate-180"));
         assert!(args.iter().any(|a| a == "method=horizontal-flip"));
         assert!(args.iter().any(|a| a == "method=vertical-flip"));
+    }
+
+    #[test]
+    fn relay_args_rot90_and_rot270_add_videoscale_to_preserve_output_dimensions() {
+        // 90°/270° swap dimensions — must re-normalise to 1280x720 so browser keeps camera.
+        for rot in [Rotation::Rot90, Rotation::Rot270] {
+            let args = build_relay_args("/dev/video8", "/dev/video7", rot, false, false);
+            assert!(
+                args.iter().any(|a| a == "videoscale"),
+                "missing videoscale for {:?}",
+                rot
+            );
+            assert!(
+                args.iter().any(|a| a == "add-borders=true"),
+                "missing add-borders for {:?}",
+                rot
+            );
+            assert!(
+                args.iter().any(|a| a == "video/x-raw,width=1280,height=720"),
+                "missing caps filter for {:?}",
+                rot
+            );
+            // Order: videoflip must come before videoscale, videoscale before v4l2sink.
+            let flip_pos = args.iter().position(|a| a == "videoflip").unwrap();
+            let scale_pos = args.iter().position(|a| a == "videoscale").unwrap();
+            let sink_pos = args.iter().position(|a| a == "v4l2sink").unwrap();
+            assert!(flip_pos < scale_pos, "videoflip must precede videoscale");
+            assert!(scale_pos < sink_pos, "videoscale must precede v4l2sink");
+        }
+    }
+
+    #[test]
+    fn relay_args_rot180_and_flips_do_not_add_videoscale() {
+        // 180° and flips don't change dimensions — no videoscale needed.
+        let cases = [
+            (Rotation::Original, false, false),
+            (Rotation::Rot180, false, false),
+            (Rotation::Original, true, false),
+            (Rotation::Original, false, true),
+            (Rotation::Rot180, true, true),
+        ];
+        for (rot, hf, vf) in cases {
+            let args = build_relay_args("/dev/video8", "/dev/video7", rot, hf, vf);
+            assert!(
+                !args.iter().any(|a| a == "videoscale"),
+                "unexpected videoscale for rot={:?} h_flip={} v_flip={}",
+                rot,
+                hf,
+                vf
+            );
+        }
     }
 
     #[test]
@@ -162,8 +224,7 @@ mod tests {
 
     #[test]
     fn scrcpy_args_include_camera_source_and_v4l2_sink() {
-        // scrcpy now writes to the intermediate device /dev/video8, not the
-        // Chrome-facing /dev/video7.  The relay bridges the two.
+        // scrcpy writes to /dev/video8, relay bridges to /dev/video7.
         let args = scrcpy_command_args("/dev/video8", 0);
         assert!(args.contains(&"--video-source=camera".to_string()));
         assert!(args.contains(&"--v4l2-sink=/dev/video8".to_string()));
@@ -189,14 +250,17 @@ mod tests {
 }
 
 pub struct VideoPipeline {
-    sink_device: String,   // /dev/video8 — scrcpy writes, relay reads.
-    output_device: String, // /dev/video7 — relay writes, Chrome reads.
+    /// /dev/video8 — scrcpy writes, relay reads.
+    sink_device: String,
+    /// /dev/video7 — relay writes, Chrome reads.
+    output_device: String,
     camera_id: AtomicU32,
-    rotation_idx: AtomicU8, // Written atomically so transform setters run on any thread.
+    /// Rotation index: 0=Original, 1=90°CW, 2=180°, 3=270°CW.
+    rotation_idx: AtomicU8,
     h_flip: AtomicBool,
     v_flip: AtomicBool,
     scrcpy_process: Mutex<Option<Child>>,
-    // Restarted on transform change; keeps running during camera switch so Chrome's track stays alive.
+    /// Persistent GStreamer relay, restarted on transform changes.
     relay_process: Mutex<Option<Child>>,
 }
 
@@ -222,7 +286,7 @@ impl VideoPipeline {
             chrome_device
         );
 
-        // NOTE: relay is started in start() after scrcpy is writing.
+        // Relay started in start() after scrcpy is writing — v4l2src needs an active writer.
         let relay = None;
 
         Ok(Self {
@@ -244,14 +308,12 @@ impl VideoPipeline {
             self.output_device
         );
 
-        // Start scrcpy first, wait for it to open the v4l2sink before relay reads.
+        // scrcpy must start first — v4l2src needs an active writer.
         log::info!("[pipeline] calling start_scrcpy()");
         self.start_scrcpy()?;
-
         log::info!("[pipeline] waiting 2000ms for scrcpy to start writing frames");
         std::thread::sleep(std::time::Duration::from_millis(2000));
 
-        // Now start the relay — it should find /dev/video8 with an active writer.
         log::info!("[pipeline] calling start_relay()");
         self.start_relay();
 
@@ -270,8 +332,7 @@ impl VideoPipeline {
             return;
         }
 
-        // Read current transform state atomically so the relay is always
-        // spawned with the settings that were active at call time.
+        // Read current transform state atomically.
         let rotation = Rotation::from_index(self.rotation_idx.load(Ordering::SeqCst));
         let h_flip = self.h_flip.load(Ordering::SeqCst);
         let v_flip = self.v_flip.load(Ordering::SeqCst);
@@ -286,8 +347,7 @@ impl VideoPipeline {
             v_flip,
         );
 
-        // Try up to 3 times: if v4l2src crashes, retry after a delay so scrcpy
-        // has more time to start writing frames to /dev/video8.
+        // Retry up to 3 times if v4l2src crashes — gives scrcpy more time.
         for attempt in 1..=3 {
             match start_relay_process(
                 &self.sink_device,
@@ -336,21 +396,21 @@ impl VideoPipeline {
         log::error!("[pipeline] start_relay: all 3 attempts exhausted");
     }
 
-    /// Must be called from a background thread — restart_relay blocks ~3×3.5s for GStreamer negotiation.
+    /// Stops relay and restarts with current transform state.
+    /// Must be called from a background thread — blocks up to ~10s.
+    /// v4l2loopback sustain_framerate=1 keeps frame alive during restart.
     fn restart_relay(&self) {
         if self.output_device.is_empty() || self.output_device == self.sink_device {
             return;
         }
 
-        // Kill the old relay process (take() so the Mutex is released before
-        // we call start_relay, which also acquires relay_process).
+        // take() releases Mutex before start_relay acquires it.
         if let Some(mut child) = self.relay_process.lock().unwrap().take() {
             log::info!("[pipeline] restart_relay: killing old relay");
             let _ = child.kill();
             let _ = child.wait();
         }
-
-        // Brief pause so the v4l2 device is released before the new relay opens it.
+        // Brief pause for v4l2 device release.
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         self.start_relay();
@@ -455,7 +515,7 @@ impl VideoPipeline {
         log::info!("[pipeline] stop: done");
     }
 
-    /// Must be called from a background thread — restart_relay blocks.
+    /// Apply new rotation, restart relay. Must be on background thread.
     pub fn set_rotation(&self, rotation: Rotation) {
         let idx: u8 = match rotation {
             Rotation::Original => 0,
@@ -468,12 +528,14 @@ impl VideoPipeline {
         self.restart_relay();
     }
 
+    /// Apply horizontal flip. Must be on background thread.
     pub fn set_horizontal_flip(&self, on: bool) {
         log::info!("[pipeline] set_horizontal_flip: {}", on);
         self.h_flip.store(on, Ordering::SeqCst);
         self.restart_relay();
     }
 
+    /// Apply vertical flip. Must be on background thread.
     pub fn set_vertical_flip(&self, on: bool) {
         log::info!("[pipeline] set_vertical_flip: {}", on);
         self.v_flip.store(on, Ordering::SeqCst);
